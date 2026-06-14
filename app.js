@@ -715,12 +715,18 @@ function renderBonusPeriodContent(period) {
   const expenses = DB.getBonusExpenses().filter(e => e.periodId === period.id);
   const cats     = DB.getBonusCats();
 
-  const totalBudget = items.reduce((s, i) => s + i.budget, 0);
-  const totalSpent  = expenses.reduce((s, e) => s + e.amount, 0);
-  const carryOver   = period.carryOver || 0;
-  const available   = period.amount + carryOver;
-  const unbudgeted  = available - totalBudget;
-  const remaining   = available - totalSpent;
+  // 繰越カテゴリを特定（名前が「繰越」のカテゴリ）
+  const carryoverCat   = cats.find(c => c.name === '繰越');
+  const carryoverCatId = carryoverCat ? carryoverCat.id : null;
+
+  const carryoverItems = items.filter(i => i.categoryId === carryoverCatId);
+
+  const carryoverTotal = carryoverItems.reduce((s, i) => s + i.budget, 0); // 繰越額
+  const budgetAmount   = period.amount + carryoverTotal;                    // 予算額
+  const totalBudget    = items.reduce((s, i) => s + i.budget, 0);          // 予算化済み総額（全カテゴリ）
+  const totalSpent     = expenses.reduce((s, e) => s + e.amount, 0);       // 使用済み
+  const unbudgeted     = budgetAmount - totalBudget;
+  const remaining      = budgetAmount - totalSpent;
 
   const copied = period.carryoverCopied;
 
@@ -737,23 +743,26 @@ function renderBonusPeriodContent(period) {
           : `<button class="btn btn-success btn-sm" onclick="copyCarryover('${period.id}')">↩ 前期から繰越をコピー</button>`
         }
       </div>
-      ${carryOver > 0 ? `<div class="carryover-note">↩ 繰越額 ${fmt(carryOver)} を含む</div>` : ''}
       <div class="summary-grid mt-8">
         <div class="summary-item">
           <div class="summary-label">ボーナス総額</div>
           <div class="summary-value">${fmt(period.amount)}</div>
         </div>
         <div class="summary-item">
-          <div class="summary-label">予算化済み</div>
+          <div class="summary-label">繰越額</div>
+          <div class="summary-value ${carryoverTotal > 0 ? 'positive' : 'text-muted'}">${fmt(carryoverTotal)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">予算額</div>
+          <div class="summary-value">${fmt(budgetAmount)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">予算化済み総額</div>
           <div class="summary-value">${fmt(totalBudget)}</div>
         </div>
         <div class="summary-item">
           <div class="summary-label">未予算額</div>
           <div class="summary-value ${unbudgeted < 0 ? 'negative' : ''}">${fmtSigned(unbudgeted)}</div>
-        </div>
-        <div class="summary-item">
-          <div class="summary-label">使用済み</div>
-          <div class="summary-value warning">${fmt(totalSpent)}</div>
         </div>
         <div class="summary-item">
           <div class="summary-label">残額</div>
@@ -903,15 +912,7 @@ function showCreateBonusPeriod() {
     const periodId = year + '-' + season;
     if (periods.find(p => p.id === periodId)) { alert('この期はすでに存在します'); return false; }
 
-    // Carry over from previous same-season period
-    const prev = periods.find(p => p.id === (year - 1) + '-' + season);
-    let carryOver = 0;
-    if (prev) {
-      const prevSpent = DB.getBonusExpenses().filter(e => e.periodId === prev.id).reduce((s, e) => s + e.amount, 0);
-      carryOver = Math.max(0, (prev.amount + (prev.carryOver || 0)) - prevSpent);
-    }
-
-    periods.push({ id: periodId, year, season, amount, carryOver });
+    periods.push({ id: periodId, year, season, amount });
     DB.saveBonusPeriods(periods);
 
     if (doCopy && prev) {
@@ -937,19 +938,13 @@ function showEditBonusPeriod(periodId) {
       <label class="form-label">ボーナス金額</label>
       <input class="form-input" id="f-amount" type="number" value="${period.amount}" inputmode="numeric">
     </div>
-    <div class="form-group">
-      <label class="form-label">繰越額</label>
-      <input class="form-input" id="f-carryover" type="number" value="${period.carryOver || 0}" inputmode="numeric">
-      <div class="form-hint">前の期の残額を繰越として設定します</div>
-    </div>
     <div class="form-actions">
       <button class="btn btn-danger" onclick="confirmDeleteBonusPeriod('${periodId}')">期を削除</button>
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" id="modal-confirm">保存</button>
     </div>
   `, () => {
-    period.amount    = parseInt(document.getElementById('f-amount').value) || 0;
-    period.carryOver = parseInt(document.getElementById('f-carryover').value) || 0;
+    period.amount = parseInt(document.getElementById('f-amount').value) || 0;
     DB.saveBonusPeriods(periods);
     renderBonus();
   });
