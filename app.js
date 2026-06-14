@@ -1,51 +1,79 @@
-// ====================== STORAGE ======================
+// ====================== FIREBASE ======================
 
-const KEYS = {
-  BONUS_CATS:    'kakeibo_bonus_cats',
-  BONUS_PERIODS: 'kakeibo_bonus_periods',
-  BONUS_ITEMS:   'kakeibo_bonus_items',
-  BONUS_EXPENSES:'kakeibo_bonus_expenses',
-  MONTHLY_CATS:  'kakeibo_monthly_cats',
-  MONTHLY_DATA:  'kakeibo_monthly_data',
+const firebaseConfig = {
+  apiKey: "AIzaSyDtmx-KOaETTTIwfSlaoYoHiFYPV8HCPOw",
+  authDomain: "kakeibo-app-19171.firebaseapp.com",
+  projectId: "kakeibo-app-19171",
+  storageBucket: "kakeibo-app-19171.firebasestorage.app",
+  messagingSenderId: "1040445712514",
+  appId: "1:1040445712514:web:f44d9948a296102400ec9b"
 };
 
-function load(key, def) {
-  try { return JSON.parse(localStorage.getItem(key)) ?? def; }
-  catch { return def; }
+firebase.initializeApp(firebaseConfig);
+const fsDb = firebase.firestore();
+
+// オフライン永続化（IndexedDB）— 複数タブ対応
+fsDb.enablePersistence({ synchronizeTabs: true }).catch(err => {
+  console.warn('Offline persistence unavailable:', err.code);
+});
+
+// ====================== CACHE ======================
+// UI は常にキャッシュから同期読み取り。Firestore 書き込みはバックグラウンド実行。
+
+const cache = {
+  bonusCats:    [],
+  bonusPeriods: [],
+  bonusItems:   [],
+  bonusExpenses:[],
+  monthlyCats:  [],
+  monthlyData:  {},
+};
+
+const FS_COL = 'kakeibo';
+
+function fsSave(docId, data) {
+  return fsDb.collection(FS_COL).doc(docId).set(data)
+    .catch(err => console.error('Firestore write error [' + docId + ']:', err));
 }
-function save(key, data) { localStorage.setItem(key, JSON.stringify(data)); }
+
+async function loadAll() {
+  const ids = ['bonusCats', 'bonusPeriods', 'bonusItems', 'bonusExpenses', 'monthlyCats', 'monthlyData'];
+  const snaps = await Promise.all(ids.map(id => fsDb.collection(FS_COL).doc(id).get()));
+  cache.bonusCats    = snaps[0].data()?.items || [];
+  cache.bonusPeriods = snaps[1].data()?.items || [];
+  cache.bonusItems   = snaps[2].data()?.items || [];
+  cache.bonusExpenses= snaps[3].data()?.items || [];
+  cache.monthlyCats  = snaps[4].data()?.items || [];
+  cache.monthlyData  = snaps[5].data()?.data  || {};
+}
+
+// ====================== DB ACCESSORS ======================
 
 function genId(prefix) {
   return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
 }
 
-// ====================== DB ACCESSORS ======================
-
 const DB = {
-  getBonusCats:    ()  => load(KEYS.BONUS_CATS, []),
-  saveBonusCats:   (d) => save(KEYS.BONUS_CATS, d),
-
-  getBonusPeriods:  ()  => load(KEYS.BONUS_PERIODS, []),
-  saveBonusPeriods: (d) => save(KEYS.BONUS_PERIODS, d),
-
-  getBonusItems:   ()  => load(KEYS.BONUS_ITEMS, []),
-  saveBonusItems:  (d) => save(KEYS.BONUS_ITEMS, d),
-
-  getBonusExpenses:  ()  => load(KEYS.BONUS_EXPENSES, []),
-  saveBonusExpenses: (d) => save(KEYS.BONUS_EXPENSES, d),
-
-  getMonthlyCats:   ()  => load(KEYS.MONTHLY_CATS, []),
-  saveMonthlyCats:  (d) => save(KEYS.MONTHLY_CATS, d),
+  getBonusCats:     () => cache.bonusCats,
+  getBonusPeriods:  () => cache.bonusPeriods,
+  getBonusItems:    () => cache.bonusItems,
+  getBonusExpenses: () => cache.bonusExpenses,
+  getMonthlyCats:   () => cache.monthlyCats,
 
   getMonthlyData: (key) => {
-    const all = load(KEYS.MONTHLY_DATA, {});
-    const d = all[key] || {};
+    const d = cache.monthlyData[key] || {};
     return { income: d.income || 0, payments: d.payments || [], bonusSupplies: d.bonusSupplies || [] };
   },
+
+  saveBonusCats:     (d) => { cache.bonusCats     = d; fsSave('bonusCats',     { items: d }); },
+  saveBonusPeriods:  (d) => { cache.bonusPeriods  = d; fsSave('bonusPeriods',  { items: d }); },
+  saveBonusItems:    (d) => { cache.bonusItems    = d; fsSave('bonusItems',    { items: d }); },
+  saveBonusExpenses: (d) => { cache.bonusExpenses = d; fsSave('bonusExpenses', { items: d }); },
+  saveMonthlyCats:   (d) => { cache.monthlyCats   = d; fsSave('monthlyCats',   { items: d }); },
+
   saveMonthlyData: (key, data) => {
-    const all = load(KEYS.MONTHLY_DATA, {});
-    all[key] = data;
-    save(KEYS.MONTHLY_DATA, all);
+    cache.monthlyData[key] = data;
+    fsSave('monthlyData', { data: cache.monthlyData });
   },
 };
 
@@ -1375,7 +1403,25 @@ function deleteBonusSupply(periodKey, supId) {
 // INIT
 // =============================================
 
-function init() {
+async function init() {
+  const overlay = document.getElementById('loading-overlay');
+
+  try {
+    await loadAll();
+  } catch (err) {
+    console.error('Firestore load failed:', err);
+    overlay.innerHTML = `
+      <div style="text-align:center;padding:32px;max-width:320px">
+        <div style="font-size:40px;margin-bottom:12px">⚠️</div>
+        <div style="font-size:15px;font-weight:700;margin-bottom:8px">読み込みに失敗しました</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">${err.message}</div>
+        <button class="btn btn-primary btn-block" onclick="location.reload()">再読み込み</button>
+      </div>`;
+    return;
+  }
+
+  overlay.classList.add('hidden');
+
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
