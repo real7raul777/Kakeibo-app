@@ -1,0 +1,1396 @@
+// ====================== STORAGE ======================
+
+const KEYS = {
+  BONUS_CATS:    'kakeibo_bonus_cats',
+  BONUS_PERIODS: 'kakeibo_bonus_periods',
+  BONUS_ITEMS:   'kakeibo_bonus_items',
+  BONUS_EXPENSES:'kakeibo_bonus_expenses',
+  MONTHLY_CATS:  'kakeibo_monthly_cats',
+  MONTHLY_DATA:  'kakeibo_monthly_data',
+};
+
+function load(key, def) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? def; }
+  catch { return def; }
+}
+function save(key, data) { localStorage.setItem(key, JSON.stringify(data)); }
+
+function genId(prefix) {
+  return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+}
+
+// ====================== DB ACCESSORS ======================
+
+const DB = {
+  getBonusCats:    ()  => load(KEYS.BONUS_CATS, []),
+  saveBonusCats:   (d) => save(KEYS.BONUS_CATS, d),
+
+  getBonusPeriods:  ()  => load(KEYS.BONUS_PERIODS, []),
+  saveBonusPeriods: (d) => save(KEYS.BONUS_PERIODS, d),
+
+  getBonusItems:   ()  => load(KEYS.BONUS_ITEMS, []),
+  saveBonusItems:  (d) => save(KEYS.BONUS_ITEMS, d),
+
+  getBonusExpenses:  ()  => load(KEYS.BONUS_EXPENSES, []),
+  saveBonusExpenses: (d) => save(KEYS.BONUS_EXPENSES, d),
+
+  getMonthlyCats:   ()  => load(KEYS.MONTHLY_CATS, []),
+  saveMonthlyCats:  (d) => save(KEYS.MONTHLY_CATS, d),
+
+  getMonthlyData: (key) => {
+    const all = load(KEYS.MONTHLY_DATA, {});
+    const d = all[key] || {};
+    return { income: d.income || 0, payments: d.payments || [], bonusSupplies: d.bonusSupplies || [] };
+  },
+  saveMonthlyData: (key, data) => {
+    const all = load(KEYS.MONTHLY_DATA, {});
+    all[key] = data;
+    save(KEYS.MONTHLY_DATA, all);
+  },
+};
+
+// ====================== STATE ======================
+
+const state = {
+  activeTab: 'bonus',
+  bonusPeriodId: null,
+  monthlyPeriodKey: null,
+};
+
+// ====================== UTILS ======================
+
+function esc(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmt(n) {
+  return '¥' + Math.abs(n || 0).toLocaleString('ja-JP');
+}
+
+function fmtSigned(n) {
+  n = n || 0;
+  return (n < 0 ? '-¥' : '¥') + Math.abs(n).toLocaleString('ja-JP');
+}
+
+function getCurrentPeriodKey() {
+  const now = new Date();
+  let y = now.getFullYear();
+  let m = now.getMonth() + 1;
+  if (now.getDate() < 20) {
+    m--;
+    if (m === 0) { m = 12; y--; }
+  }
+  return y + '-' + String(m).padStart(2, '0');
+}
+
+function periodKeyLabel(key) {
+  const [y, m] = key.split('-').map(Number);
+  const MO = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  let em = m + 1, ey = y;
+  if (em > 12) { em = 1; ey++; }
+  return y + '年' + MO[m-1] + '20日〜' + ey + '年' + MO[em-1] + '19日';
+}
+
+function periodKeyShort(key) {
+  const [y, m] = key.split('-').map(Number);
+  return y + '年' + m + '月期';
+}
+
+function bonusPeriodLabel(p) {
+  return p.year + '年' + (p.season === 'summer' ? '夏' : '冬');
+}
+
+function prevPeriodKey(key) {
+  let [y, m] = key.split('-').map(Number);
+  m--; if (m === 0) { m = 12; y--; }
+  return y + '-' + String(m).padStart(2, '0');
+}
+
+function nextPeriodKey(key) {
+  let [y, m] = key.split('-').map(Number);
+  m++; if (m > 12) { m = 1; y++; }
+  return y + '-' + String(m).padStart(2, '0');
+}
+
+function getBonusItemSpent(itemId) {
+  return DB.getBonusExpenses()
+    .filter(e => e.itemId === itemId)
+    .reduce((s, e) => s + e.amount, 0);
+}
+
+function getBonusItemRemaining(item) {
+  return item.budget - getBonusItemSpent(item.id);
+}
+
+// ====================== MODAL ======================
+
+function openModal(title, bodyHTML, onConfirm) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHTML;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+
+  const confirmBtn = document.getElementById('modal-confirm');
+  if (confirmBtn && onConfirm) {
+    confirmBtn.addEventListener('click', function handler() {
+      const result = onConfirm();
+      if (result !== false) closeModal();
+    });
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  document.getElementById('modal-body').innerHTML = '';
+}
+
+// ====================== ROUTING ======================
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + tab));
+  renderTab(tab);
+}
+
+function renderTab(tab) {
+  if (tab === 'bonus')    renderBonus();
+  if (tab === 'monthly')  renderMonthly();
+  if (tab === 'settings') renderSettings();
+}
+
+// =============================================
+// SETTINGS TAB
+// =============================================
+
+function renderSettings() {
+  document.getElementById('settings-content').innerHTML = `
+    <div class="page-title">設定</div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">ボーナス管理 カテゴリ</span>
+        <button class="btn btn-primary btn-sm" onclick="showAddBonusCat()">＋ 追加</button>
+      </div>
+      <ul class="settings-list" id="bonus-cat-list">${renderBonusCatList()}</ul>
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">月次管理 カテゴリ</span>
+        <button class="btn btn-primary btn-sm" onclick="showAddMonthlyCat()">＋ 追加</button>
+      </div>
+      <div id="monthly-cat-list">${renderMonthlyCatList()}</div>
+    </div>
+  `;
+}
+
+function renderBonusCatList() {
+  const cats = DB.getBonusCats();
+  if (!cats.length) return '<li class="empty-state"><div class="empty-state-icon">📂</div>カテゴリがありません</li>';
+  return cats.map((cat, i) => `
+    <li class="settings-item">
+      <span class="settings-item-name">${esc(cat.name)}</span>
+      <div class="settings-item-actions">
+        ${i > 0 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusCat('${cat.id}',-1)">↑</button>` : ''}
+        ${i < cats.length - 1 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusCat('${cat.id}',1)">↓</button>` : ''}
+        <button class="btn btn-secondary btn-xs" onclick="showEditBonusCat('${cat.id}')">編集</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteBonusCat('${cat.id}')">削除</button>
+      </div>
+    </li>
+  `).join('');
+}
+
+function renderMonthlyCatList() {
+  const cats = DB.getMonthlyCats();
+  if (!cats.length) return '<div class="empty-state"><div class="empty-state-icon">📂</div>カテゴリがありません</div>';
+  return cats.map((cat, ci) => `
+    <div class="cat-block">
+      <div class="cat-header">
+        <span class="cat-name">${esc(cat.name)}</span>
+        <div class="cat-actions">
+          ${ci > 0 ? `<button class="btn btn-secondary btn-xs" onclick="moveMonthlyCat('${cat.id}',-1)">↑</button>` : ''}
+          ${ci < cats.length - 1 ? `<button class="btn btn-secondary btn-xs" onclick="moveMonthlyCat('${cat.id}',1)">↓</button>` : ''}
+          <button class="btn btn-secondary btn-xs" onclick="showEditMonthlyCat('${cat.id}')">編集</button>
+          <button class="btn btn-danger btn-xs" onclick="deleteMonthlyCat('${cat.id}')">削除</button>
+        </div>
+      </div>
+      ${cat.items.map(item => `
+        <div class="item-row">
+          <div class="item-info">
+            <div class="item-name">${esc(item.name)}</div>
+            <div class="item-sub">固定額: ${fmt(item.defaultAmount)}</div>
+          </div>
+          <div class="item-right">
+            <button class="btn btn-secondary btn-xs" onclick="showEditMonthlyItem('${cat.id}','${item.id}')">編集</button>
+            <button class="btn btn-danger btn-xs" onclick="deleteMonthlyItem('${cat.id}','${item.id}')">削除</button>
+          </div>
+        </div>
+      `).join('')}
+      <div class="add-row">
+        <button class="btn btn-secondary btn-sm" onclick="showAddMonthlyItem('${cat.id}')">＋ 内容を追加</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+// --- Bonus Cat CRUD ---
+
+function showAddBonusCat() {
+  openModal('ボーナスカテゴリ追加', `
+    <div class="form-group">
+      <label class="form-label">カテゴリ名</label>
+      <input class="form-input" id="f-name" type="text" placeholder="例：お小遣い" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    if (!name) { alert('カテゴリ名を入力してください'); return false; }
+    const cats = DB.getBonusCats();
+    cats.push({ id: genId('bcat'), name });
+    DB.saveBonusCats(cats);
+    renderSettings();
+  });
+  setTimeout(() => document.getElementById('f-name')?.focus(), 100);
+}
+
+function showEditBonusCat(id) {
+  const cats = DB.getBonusCats();
+  const cat = cats.find(c => c.id === id);
+  if (!cat) return;
+  openModal('ボーナスカテゴリ編集', `
+    <div class="form-group">
+      <label class="form-label">カテゴリ名</label>
+      <input class="form-input" id="f-name" type="text" value="${esc(cat.name)}" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    if (!name) { alert('カテゴリ名を入力してください'); return false; }
+    cat.name = name;
+    DB.saveBonusCats(cats);
+    renderSettings();
+  });
+}
+
+function deleteBonusCat(id) {
+  if (!confirm('このカテゴリを削除しますか？\n関連する内容・支出履歴もすべて削除されます。')) return;
+  const itemIds = DB.getBonusItems().filter(i => i.categoryId === id).map(i => i.id);
+  DB.saveBonusCats(DB.getBonusCats().filter(c => c.id !== id));
+  DB.saveBonusItems(DB.getBonusItems().filter(i => i.categoryId !== id));
+  DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => !itemIds.includes(e.itemId)));
+  renderSettings();
+}
+
+function moveBonusCat(id, dir) {
+  const cats = DB.getBonusCats();
+  const idx = cats.findIndex(c => c.id === id);
+  const ni = idx + dir;
+  if (ni < 0 || ni >= cats.length) return;
+  [cats[idx], cats[ni]] = [cats[ni], cats[idx]];
+  DB.saveBonusCats(cats);
+  renderSettings();
+}
+
+// --- Monthly Cat CRUD ---
+
+function showAddMonthlyCat() {
+  openModal('月次カテゴリ追加', `
+    <div class="form-group">
+      <label class="form-label">カテゴリ名</label>
+      <input class="form-input" id="f-name" type="text" placeholder="例：楽天カード" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    if (!name) { alert('カテゴリ名を入力してください'); return false; }
+    const cats = DB.getMonthlyCats();
+    cats.push({ id: genId('mcat'), name, items: [] });
+    DB.saveMonthlyCats(cats);
+    renderSettings();
+  });
+  setTimeout(() => document.getElementById('f-name')?.focus(), 100);
+}
+
+function showEditMonthlyCat(id) {
+  const cats = DB.getMonthlyCats();
+  const cat = cats.find(c => c.id === id);
+  if (!cat) return;
+  openModal('月次カテゴリ編集', `
+    <div class="form-group">
+      <label class="form-label">カテゴリ名</label>
+      <input class="form-input" id="f-name" type="text" value="${esc(cat.name)}" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    if (!name) { alert('カテゴリ名を入力してください'); return false; }
+    cat.name = name;
+    DB.saveMonthlyCats(cats);
+    renderSettings();
+  });
+}
+
+function deleteMonthlyCat(id) {
+  if (!confirm('このカテゴリを削除しますか？\n配下の内容もすべて削除されます。')) return;
+  DB.saveMonthlyCats(DB.getMonthlyCats().filter(c => c.id !== id));
+  renderSettings();
+}
+
+function moveMonthlyCat(id, dir) {
+  const cats = DB.getMonthlyCats();
+  const idx = cats.findIndex(c => c.id === id);
+  const ni = idx + dir;
+  if (ni < 0 || ni >= cats.length) return;
+  [cats[idx], cats[ni]] = [cats[ni], cats[idx]];
+  DB.saveMonthlyCats(cats);
+  renderSettings();
+}
+
+function showAddMonthlyItem(catId) {
+  openModal('内容追加', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" placeholder="例：食費" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">毎月の固定金額</label>
+      <input class="form-input" id="f-amount" type="number" placeholder="30000" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    const cats = DB.getMonthlyCats();
+    const cat = cats.find(c => c.id === catId);
+    if (!cat) return;
+    cat.items.push({ id: genId('mitem'), name, defaultAmount: amount });
+    DB.saveMonthlyCats(cats);
+    renderSettings();
+  });
+  setTimeout(() => document.getElementById('f-name')?.focus(), 100);
+}
+
+function showEditMonthlyItem(catId, itemId) {
+  const cats = DB.getMonthlyCats();
+  const cat = cats.find(c => c.id === catId);
+  const item = cat?.items.find(i => i.id === itemId);
+  if (!item) return;
+  openModal('内容編集', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" value="${esc(item.name)}" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">毎月の固定金額</label>
+      <input class="form-input" id="f-amount" type="number" value="${item.defaultAmount}" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const name = document.getElementById('f-name').value.trim();
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    item.name = name;
+    item.defaultAmount = amount;
+    DB.saveMonthlyCats(cats);
+    renderSettings();
+  });
+}
+
+function deleteMonthlyItem(catId, itemId) {
+  if (!confirm('この内容を削除しますか？')) return;
+  const cats = DB.getMonthlyCats();
+  const cat = cats.find(c => c.id === catId);
+  if (!cat) return;
+  cat.items = cat.items.filter(i => i.id !== itemId);
+  DB.saveMonthlyCats(cats);
+  renderSettings();
+}
+
+// =============================================
+// BONUS TAB
+// =============================================
+
+function renderBonus() {
+  const periods = DB.getBonusPeriods();
+  if (!state.bonusPeriodId && periods.length) state.bonusPeriodId = periods[periods.length - 1].id;
+
+  const el = document.getElementById('bonus-content');
+  el.innerHTML = `
+    <div class="period-selector">
+      <select onchange="selectBonusPeriod(this.value)">
+        ${!periods.length ? '<option value="">期がありません</option>' : ''}
+        ${periods.map(p => `<option value="${p.id}" ${p.id === state.bonusPeriodId ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="showCreateBonusPeriod()">＋ 新しい期</button>
+    </div>
+    ${periods.length && state.bonusPeriodId
+      ? renderBonusPeriodContent(periods.find(p => p.id === state.bonusPeriodId))
+      : '<div class="empty-state"><div class="empty-state-icon">💰</div>ボーナス期を作成してください</div>'
+    }
+  `;
+}
+
+function renderBonusPeriodContent(period) {
+  if (!period) return '';
+  const items    = DB.getBonusItems().filter(i => i.periodId === period.id);
+  const expenses = DB.getBonusExpenses().filter(e => e.periodId === period.id);
+  const cats     = DB.getBonusCats();
+
+  const totalBudget = items.reduce((s, i) => s + i.budget, 0);
+  const totalSpent  = expenses.reduce((s, e) => s + e.amount, 0);
+  const carryOver   = period.carryOver || 0;
+  const available   = period.amount + carryOver;
+  const unbudgeted  = available - totalBudget;
+  const remaining   = available - totalSpent;
+
+  return `
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">サマリー</span>
+        <button class="btn btn-secondary btn-sm" onclick="showEditBonusPeriod('${period.id}')">期の設定</button>
+      </div>
+      ${carryOver > 0 ? `<div class="carryover-note">↩ 繰越 ${fmt(carryOver)} を含む</div>` : ''}
+      <div class="summary-grid mt-8">
+        <div class="summary-item">
+          <div class="summary-label">ボーナス総額</div>
+          <div class="summary-value">${fmt(period.amount)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">予算化済み</div>
+          <div class="summary-value">${fmt(totalBudget)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">未予算額</div>
+          <div class="summary-value ${unbudgeted < 0 ? 'negative' : ''}">${fmtSigned(unbudgeted)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">使用済み</div>
+          <div class="summary-value warning">${fmt(totalSpent)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">残額</div>
+          <div class="summary-value ${remaining < 0 ? 'negative' : 'positive'}">${fmtSigned(remaining)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">予算管理</span>
+      </div>
+      ${cats.length === 0
+        ? '<div class="empty-state">設定でカテゴリを追加してください</div>'
+        : cats.map(cat => renderBonusCatBlock(cat, period, items, expenses)).join('')
+      }
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">支出履歴</span>
+        <button class="btn btn-primary btn-sm" onclick="showAddBonusExpense('${period.id}')">＋ 支出追加</button>
+      </div>
+      ${renderBonusExpenseList(period, expenses, items, cats)}
+    </div>
+  `;
+}
+
+function renderBonusCatBlock(cat, period, allItems, allExpenses) {
+  const items    = allItems.filter(i => i.categoryId === cat.id);
+  const expenses = allExpenses.filter(e => e.categoryId === cat.id);
+  const catBudget = items.reduce((s, i) => s + i.budget, 0);
+  const catSpent  = expenses.reduce((s, e) => s + e.amount, 0);
+  const catRem    = catBudget - catSpent;
+
+  return `
+    <div class="cat-block">
+      <div class="cat-header">
+        <span class="cat-name">${esc(cat.name)}</span>
+      </div>
+      <div class="cat-stat-row">
+        <span class="tag tag-budget">予算 ${fmt(catBudget)}</span>
+        <span class="tag tag-actual">実績 ${fmt(catSpent)}</span>
+        <span class="tag ${catRem < 0 ? 'tag-over' : 'tag-remaining'}">残 ${fmtSigned(catRem)}</span>
+      </div>
+      ${items.map(item => {
+        const spent = allExpenses.filter(e => e.itemId === item.id).reduce((s, e) => s + e.amount, 0);
+        const rem   = item.budget - spent;
+        const pct   = item.budget > 0 ? Math.min(100, Math.round((spent / item.budget) * 100)) : 0;
+        const cls   = pct >= 100 ? 'over' : pct >= 80 ? 'almost' : '';
+        return `
+          <div class="item-row">
+            <div class="item-info">
+              <div class="item-name">${esc(item.name)}</div>
+              <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
+            </div>
+            <div class="item-right">
+              <div class="item-amounts">
+                <span class="tag tag-budget">${fmt(item.budget)}</span>
+                <span class="tag tag-actual">${fmt(spent)}</span>
+                <span class="tag ${rem < 0 ? 'tag-over' : 'tag-remaining'}">${fmtSigned(rem)}</span>
+              </div>
+              <button class="btn btn-secondary btn-xs" onclick="showEditBonusItem('${item.id}','${period.id}')">編集</button>
+              <button class="btn btn-danger btn-xs" onclick="deleteBonusItem('${item.id}')">削除</button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+      <div class="add-row">
+        <button class="btn btn-secondary btn-sm" onclick="showAddBonusItem('${cat.id}','${period.id}')">＋ 内容を追加</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBonusExpenseList(period, expenses, items, cats) {
+  if (!expenses.length) return '<div class="empty-state">支出履歴がありません</div>';
+  const sorted = [...expenses].sort((a, b) => b.date.localeCompare(a.date));
+  return `
+    <ul class="exp-list">
+      ${sorted.map(exp => {
+        const cat  = cats.find(c => c.id === exp.categoryId);
+        const item = items.find(i => i.id === exp.itemId);
+        const isSupply = exp.source === 'bonus_supply';
+        return `
+          <li class="exp-item">
+            <div class="exp-info">
+              <div class="exp-date">${exp.date}　${cat ? esc(cat.name) : ''}／${item ? esc(item.name) : ''}</div>
+              ${isSupply ? '<span class="tag tag-custom" style="font-size:10px">月次補充</span>' : ''}
+              ${exp.memo ? `<div class="exp-memo">${esc(exp.memo)}</div>` : ''}
+            </div>
+            <div class="exp-right">
+              <span class="exp-amount">${fmt(exp.amount)}</span>
+              ${!isSupply ? `<button class="btn btn-danger btn-xs" onclick="deleteBonusExpense('${exp.id}')">削除</button>` : ''}
+            </div>
+          </li>
+        `;
+      }).join('')}
+    </ul>
+  `;
+}
+
+// --- Bonus Period ---
+
+function selectBonusPeriod(id) {
+  state.bonusPeriodId = id;
+  renderBonus();
+}
+
+function showCreateBonusPeriod() {
+  const periods = DB.getBonusPeriods();
+  const y = new Date().getFullYear();
+  openModal('新しいボーナス期を作成', `
+    <div class="form-group">
+      <label class="form-label">年</label>
+      <input class="form-input" id="f-year" type="number" value="${y}" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">期</label>
+      <select class="form-input" id="f-season">
+        <option value="summer">夏</option>
+        <option value="winter">冬</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">ボーナス金額</label>
+      <input class="form-input" id="f-amount" type="number" placeholder="1000000" inputmode="numeric">
+    </div>
+    ${periods.length ? `
+    <div class="form-group">
+      <div class="check-group">
+        <input type="checkbox" id="f-copy" checked>
+        <label for="f-copy">前回同期（前年同期）の予算をコピーする</label>
+      </div>
+    </div>` : ''}
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">作成</button>
+    </div>
+  `, () => {
+    const year   = parseInt(document.getElementById('f-year').value);
+    const season = document.getElementById('f-season').value;
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    const copyEl = document.getElementById('f-copy');
+    const doCopy = copyEl ? copyEl.checked : false;
+    if (!year) { alert('年を入力してください'); return false; }
+    const periodId = year + '-' + season;
+    if (periods.find(p => p.id === periodId)) { alert('この期はすでに存在します'); return false; }
+
+    // Carry over from previous same-season period
+    const prev = periods.find(p => p.id === (year - 1) + '-' + season);
+    let carryOver = 0;
+    if (prev) {
+      const prevSpent = DB.getBonusExpenses().filter(e => e.periodId === prev.id).reduce((s, e) => s + e.amount, 0);
+      carryOver = Math.max(0, (prev.amount + (prev.carryOver || 0)) - prevSpent);
+    }
+
+    periods.push({ id: periodId, year, season, amount, carryOver });
+    DB.saveBonusPeriods(periods);
+
+    if (doCopy && prev) {
+      const prevItems = DB.getBonusItems().filter(i => i.periodId === prev.id);
+      const allItems  = DB.getBonusItems();
+      prevItems.forEach(item => {
+        allItems.push({ id: genId('bitem'), periodId, categoryId: item.categoryId, name: item.name, budget: item.budget });
+      });
+      DB.saveBonusItems(allItems);
+    }
+
+    state.bonusPeriodId = periodId;
+    renderBonus();
+  });
+}
+
+function showEditBonusPeriod(periodId) {
+  const periods = DB.getBonusPeriods();
+  const period  = periods.find(p => p.id === periodId);
+  if (!period) return;
+  openModal('期の設定', `
+    <div class="form-group">
+      <label class="form-label">ボーナス金額</label>
+      <input class="form-input" id="f-amount" type="number" value="${period.amount}" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">繰越額</label>
+      <input class="form-input" id="f-carryover" type="number" value="${period.carryOver || 0}" inputmode="numeric">
+      <div class="form-hint">前の期の残額を繰越として設定します</div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-danger" onclick="confirmDeleteBonusPeriod('${periodId}')">期を削除</button>
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    period.amount    = parseInt(document.getElementById('f-amount').value) || 0;
+    period.carryOver = parseInt(document.getElementById('f-carryover').value) || 0;
+    DB.saveBonusPeriods(periods);
+    renderBonus();
+  });
+}
+
+function confirmDeleteBonusPeriod(periodId) {
+  if (!confirm('この期を削除しますか？\n関連する内容・支出履歴もすべて削除されます。')) return;
+  closeModal();
+  DB.saveBonusPeriods(DB.getBonusPeriods().filter(p => p.id !== periodId));
+  DB.saveBonusItems(DB.getBonusItems().filter(i => i.periodId !== periodId));
+  DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.periodId !== periodId));
+  const remaining = DB.getBonusPeriods();
+  state.bonusPeriodId = remaining.length ? remaining[remaining.length - 1].id : null;
+  renderBonus();
+}
+
+// --- Bonus Items (内容) ---
+
+function showAddBonusItem(catId, periodId) {
+  openModal('内容追加', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" placeholder="例：パパ" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">予算金額</label>
+      <input class="form-input" id="f-budget" type="number" placeholder="150000" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const name   = document.getElementById('f-name').value.trim();
+    const budget = parseInt(document.getElementById('f-budget').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    const items = DB.getBonusItems();
+    items.push({ id: genId('bitem'), periodId, categoryId: catId, name, budget });
+    DB.saveBonusItems(items);
+    renderBonus();
+  });
+  setTimeout(() => document.getElementById('f-name')?.focus(), 100);
+}
+
+function showEditBonusItem(itemId) {
+  const items = DB.getBonusItems();
+  const item  = items.find(i => i.id === itemId);
+  if (!item) return;
+  openModal('内容編集', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" value="${esc(item.name)}" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">予算金額</label>
+      <input class="form-input" id="f-budget" type="number" value="${item.budget}" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const name   = document.getElementById('f-name').value.trim();
+    const budget = parseInt(document.getElementById('f-budget').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    item.name   = name;
+    item.budget = budget;
+    DB.saveBonusItems(items);
+    renderBonus();
+  });
+}
+
+function deleteBonusItem(itemId) {
+  if (!confirm('この内容を削除しますか？\n関連する支出履歴も削除されます。')) return;
+  DB.saveBonusItems(DB.getBonusItems().filter(i => i.id !== itemId));
+  DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.itemId !== itemId));
+  renderBonus();
+}
+
+// --- Bonus Expenses ---
+
+function showAddBonusExpense(periodId) {
+  const cats    = DB.getBonusCats();
+  const allItems = DB.getBonusItems().filter(i => i.periodId === periodId);
+
+  if (!cats.length || !allItems.length) {
+    alert('先にカテゴリと内容を追加してください');
+    return;
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+
+  function buildItemOpts(catId) {
+    return allItems.filter(i => i.categoryId === catId).map(i => {
+      const rem = getBonusItemRemaining(i);
+      return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
+    }).join('') || '<option value="">内容がありません</option>';
+  }
+
+  const firstCat = cats.find(c => allItems.some(i => i.categoryId === c.id)) || cats[0];
+
+  openModal('支出追加', `
+    <div class="form-group">
+      <label class="form-label">日付</label>
+      <input class="form-input" id="f-date" type="date" value="${today}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">カテゴリ</label>
+      <select class="form-input" id="f-cat" onchange="onBonusExpCatChange('${periodId}')">
+        ${cats.map(c => `<option value="${c.id}" ${c.id === firstCat.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">内容</label>
+      <select class="form-input" id="f-item" onchange="onBonusExpItemChange()">
+        ${buildItemOpts(firstCat.id)}
+      </select>
+    </div>
+    <div id="rem-info" class="remaining-info ok" style="display:none"></div>
+    <div class="form-group">
+      <label class="form-label">金額</label>
+      <input class="form-input" id="f-amount" type="number" placeholder="10000" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">メモ（任意）</label>
+      <input class="form-input" id="f-memo" type="text" placeholder="メモ" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const date   = document.getElementById('f-date').value;
+    const catId  = document.getElementById('f-cat').value;
+    const itemId = document.getElementById('f-item').value;
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    const memo   = document.getElementById('f-memo').value.trim();
+    if (!date)   { alert('日付を入力してください'); return false; }
+    if (!amount) { alert('金額を入力してください'); return false; }
+    if (!itemId) { alert('内容を選択してください'); return false; }
+    const item = allItems.find(i => i.id === itemId);
+    if (item) {
+      const rem = getBonusItemRemaining(item);
+      if (amount > rem) {
+        alert('残額を超えています。\n残額: ' + fmt(rem) + '\n入力金額: ' + fmt(amount));
+        return false;
+      }
+    }
+    const exps = DB.getBonusExpenses();
+    exps.push({ id: genId('exp'), periodId, date, categoryId: catId, itemId, amount, memo, source: 'bonus' });
+    DB.saveBonusExpenses(exps);
+    renderBonus();
+  });
+
+  setTimeout(() => onBonusExpItemChange(), 50);
+}
+
+// Global helpers for bonus expense form
+function onBonusExpCatChange(periodId) {
+  const catId    = document.getElementById('f-cat')?.value;
+  const itemSel  = document.getElementById('f-item');
+  if (!itemSel) return;
+  const allItems = DB.getBonusItems().filter(i => i.periodId === periodId && i.categoryId === catId);
+  itemSel.innerHTML = allItems.length
+    ? allItems.map(i => {
+        const rem = getBonusItemRemaining(i);
+        return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
+      }).join('')
+    : '<option value="">内容がありません</option>';
+  onBonusExpItemChange();
+}
+
+function onBonusExpItemChange() {
+  const sel  = document.getElementById('f-item');
+  const info = document.getElementById('rem-info');
+  if (!sel || !info) return;
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) { info.style.display = 'none'; return; }
+  const rem = parseInt(opt.dataset.rem || '0');
+  info.style.display = '';
+  if (rem <= 0) {
+    info.className = 'remaining-info over';
+    info.textContent = '残額: ' + fmtSigned(rem) + '（超過）';
+  } else if (rem < 50000) {
+    info.className = 'remaining-info warning';
+    info.textContent = '残額: ' + fmt(rem);
+  } else {
+    info.className = 'remaining-info ok';
+    info.textContent = '残額: ' + fmt(rem);
+  }
+}
+
+function deleteBonusExpense(expId) {
+  const exp = DB.getBonusExpenses().find(e => e.id === expId);
+  if (exp && exp.source === 'bonus_supply') {
+    alert('月次補充の支出は月次管理画面から削除してください');
+    return;
+  }
+  if (!confirm('この支出を削除しますか？')) return;
+  DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.id !== expId));
+  renderBonus();
+}
+
+// =============================================
+// MONTHLY TAB
+// =============================================
+
+function renderMonthly() {
+  if (!state.monthlyPeriodKey) state.monthlyPeriodKey = getCurrentPeriodKey();
+  const key  = state.monthlyPeriodKey;
+  const data = DB.getMonthlyData(key);
+  const cats = DB.getMonthlyCats();
+
+  const totalPay    = calcTotalPayments(data, cats);
+  const totalSupply = data.bonusSupplies.reduce((s, b) => s + b.amount, 0);
+  const balance     = data.income - totalPay;
+
+  document.getElementById('monthly-content').innerHTML = `
+    <div class="month-nav">
+      <button class="btn btn-secondary btn-sm" onclick="navigateMonth(-1)">◀</button>
+      <span class="month-nav-title">${periodKeyShort(key)}</span>
+      <button class="btn btn-secondary btn-sm" onclick="navigateMonth(1)">▶</button>
+    </div>
+    <div class="month-nav-sub">${periodKeyLabel(key)}</div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">サマリー</span>
+        <button class="btn btn-secondary btn-sm" onclick="showEditIncome('${key}')">給料設定</button>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="summary-label">給料収入</div>
+          <div class="summary-value">${fmt(data.income)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">支払合計</div>
+          <div class="summary-value warning">${fmt(totalPay)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">ボーナス補充</div>
+          <div class="summary-value positive">${fmt(totalSupply)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">収支差額</div>
+          <div class="summary-value ${balance < 0 ? 'negative' : 'positive'}">${fmtSigned(balance)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">支払い管理</span>
+      </div>
+      ${renderMonthlyPayments(key, data, cats)}
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">ボーナス補充</span>
+        <button class="btn btn-primary btn-sm" onclick="showAddBonusSupply('${key}')">＋ 追加</button>
+      </div>
+      ${renderBonusSupplies(key, data, cats)}
+    </div>
+  `;
+}
+
+function calcTotalPayments(data, cats) {
+  let total = 0;
+  cats.forEach(cat => {
+    cat.items.forEach(item => {
+      const ov = data.payments.find(p => p.categoryId === cat.id && p.itemId === item.id && !p.isCustom);
+      total += ov ? ov.amount : item.defaultAmount;
+    });
+  });
+  data.payments.filter(p => p.isCustom).forEach(p => { total += p.amount; });
+  return total;
+}
+
+function renderMonthlyPayments(periodKey, data, cats) {
+  if (!cats.length) return '<div class="empty-state">設定でカテゴリを追加してください</div>';
+
+  return cats.map(cat => {
+    const masterItems = cat.items.map(item => {
+      const ov     = data.payments.find(p => p.categoryId === cat.id && p.itemId === item.id && !p.isCustom);
+      const amount = ov ? ov.amount : item.defaultAmount;
+      return { ...item, amount, isModified: !!ov && ov.amount !== item.defaultAmount };
+    });
+    const customItems = data.payments.filter(p => p.categoryId === cat.id && p.isCustom);
+    const catTotal = [...masterItems, ...customItems].reduce((s, p) => s + p.amount, 0);
+
+    return `
+      <div class="cat-block">
+        <div class="cat-header">
+          <span class="cat-name">${esc(cat.name)}</span>
+          <span class="tag tag-budget">${fmt(catTotal)}</span>
+        </div>
+        ${masterItems.map(item => `
+          <div class="item-row">
+            <div class="item-info">
+              <div class="item-name">${esc(item.name)}</div>
+              ${item.isModified ? `<div class="item-sub">固定額: ${fmt(item.defaultAmount)}</div>` : ''}
+            </div>
+            <div class="item-right">
+              ${item.isModified ? '<span class="tag tag-modified">変更済</span>' : ''}
+              <span class="fw-700">${fmt(item.amount)}</span>
+              <button class="btn btn-secondary btn-xs" onclick="showEditPayment('${periodKey}','${cat.id}','${item.id}')">編集</button>
+            </div>
+          </div>
+        `).join('')}
+        ${customItems.map(p => `
+          <div class="item-row">
+            <div class="item-info">
+              <div class="item-name">${esc(p.name)}</div>
+            </div>
+            <div class="item-right">
+              <span class="tag tag-custom">追加</span>
+              <span class="fw-700">${fmt(p.amount)}</span>
+              <button class="btn btn-secondary btn-xs" onclick="showEditCustomPayment('${periodKey}','${p.id}')">編集</button>
+              <button class="btn btn-danger btn-xs" onclick="deleteCustomPayment('${periodKey}','${p.id}')">削除</button>
+            </div>
+          </div>
+        `).join('')}
+        <div class="add-row">
+          <button class="btn btn-secondary btn-sm" onclick="showAddCustomPayment('${periodKey}','${cat.id}')">＋ この月に追加</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderBonusSupplies(periodKey, data, cats) {
+  if (!data.bonusSupplies.length) return '<div class="empty-state">ボーナス補充がありません</div>';
+  const bonusCats    = DB.getBonusCats();
+  const bonusPeriods = DB.getBonusPeriods();
+  return `
+    <ul class="exp-list">
+      ${data.bonusSupplies.map(sup => {
+        const mCat   = cats.find(c => c.id === sup.monthlyCategoryId);
+        const mItem  = mCat?.items.find(i => i.id === sup.monthlyItemId);
+        const bPer   = bonusPeriods.find(p => p.id === sup.bonusPeriodId);
+        const bCat   = bonusCats.find(c => c.id === sup.bonusCategoryId);
+        const bItems = DB.getBonusItems().filter(i => i.periodId === sup.bonusPeriodId);
+        const bItem  = bItems.find(i => i.id === sup.bonusItemId);
+        return `
+          <li class="exp-item">
+            <div class="exp-info">
+              <div class="exp-date fw-bold">${mCat ? esc(mCat.name) : ''}／${mItem ? esc(mItem.name) : (sup.monthlyCustomName || '—')}</div>
+              <div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''}</div>
+              <div class="exp-memo">ボーナスから ${fmt(sup.bonusAmount)}</div>
+            </div>
+            <div class="exp-right">
+              <span class="exp-amount">${fmt(sup.amount)}</span>
+              <button class="btn btn-danger btn-xs" onclick="deleteBonusSupply('${periodKey}','${sup.id}')">削除</button>
+            </div>
+          </li>
+        `;
+      }).join('')}
+    </ul>
+  `;
+}
+
+// --- Monthly Navigation ---
+
+function navigateMonth(dir) {
+  state.monthlyPeriodKey = dir < 0
+    ? prevPeriodKey(state.monthlyPeriodKey)
+    : nextPeriodKey(state.monthlyPeriodKey);
+  renderMonthly();
+}
+
+// --- Monthly Income ---
+
+function showEditIncome(periodKey) {
+  const data = DB.getMonthlyData(periodKey);
+  openModal('給料設定', `
+    <div class="form-group">
+      <label class="form-label">給料収入</label>
+      <input class="form-input" id="f-income" type="number" value="${data.income}" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    data.income = parseInt(document.getElementById('f-income').value) || 0;
+    DB.saveMonthlyData(periodKey, data);
+    renderMonthly();
+  });
+  setTimeout(() => document.getElementById('f-income')?.focus(), 100);
+}
+
+// --- Monthly Payments ---
+
+function showEditPayment(periodKey, catId, itemId) {
+  const cats   = DB.getMonthlyCats();
+  const cat    = cats.find(c => c.id === catId);
+  const item   = cat?.items.find(i => i.id === itemId);
+  const data   = DB.getMonthlyData(periodKey);
+  const ov     = data.payments.find(p => p.categoryId === catId && p.itemId === itemId && !p.isCustom);
+  const cur    = ov ? ov.amount : (item?.defaultAmount || 0);
+  const defAmt = item?.defaultAmount || 0;
+
+  openModal('支払額を編集', `
+    <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">${item ? esc(item.name) : ''}（固定設定額: ${fmt(defAmt)}）</div>
+    <div class="form-group">
+      <label class="form-label">この月の金額</label>
+      <input class="form-input" id="f-amount" type="number" value="${cur}" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      ${ov ? `<button class="btn btn-warning btn-sm" onclick="resetPayment('${periodKey}','${catId}','${itemId}')">固定額に戻す</button>` : ''}
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    const idx    = data.payments.findIndex(p => p.categoryId === catId && p.itemId === itemId && !p.isCustom);
+    if (idx >= 0) {
+      data.payments[idx].amount = amount;
+    } else {
+      data.payments.push({ id: genId('pay'), categoryId: catId, itemId, amount, isCustom: false });
+    }
+    DB.saveMonthlyData(periodKey, data);
+    renderMonthly();
+  });
+  setTimeout(() => document.getElementById('f-amount')?.focus(), 100);
+}
+
+function resetPayment(periodKey, catId, itemId) {
+  closeModal();
+  const data = DB.getMonthlyData(periodKey);
+  data.payments = data.payments.filter(p => !(p.categoryId === catId && p.itemId === itemId && !p.isCustom));
+  DB.saveMonthlyData(periodKey, data);
+  renderMonthly();
+}
+
+function showAddCustomPayment(periodKey, catId) {
+  const cat = DB.getMonthlyCats().find(c => c.id === catId);
+  openModal((cat ? esc(cat.name) + 'に' : '') + 'この月の支払いを追加', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" placeholder="例：臨時出費" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">金額</label>
+      <input class="form-input" id="f-amount" type="number" placeholder="0" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const name   = document.getElementById('f-name').value.trim();
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    const data = DB.getMonthlyData(periodKey);
+    data.payments.push({ id: genId('cpay'), categoryId: catId, itemId: null, name, amount, isCustom: true });
+    DB.saveMonthlyData(periodKey, data);
+    renderMonthly();
+  });
+  setTimeout(() => document.getElementById('f-name')?.focus(), 100);
+}
+
+function showEditCustomPayment(periodKey, payId) {
+  const data = DB.getMonthlyData(periodKey);
+  const pay  = data.payments.find(p => p.id === payId);
+  if (!pay) return;
+  openModal('支払いを編集', `
+    <div class="form-group">
+      <label class="form-label">内容名</label>
+      <input class="form-input" id="f-name" type="text" value="${esc(pay.name)}" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="form-label">金額</label>
+      <input class="form-input" id="f-amount" type="number" value="${pay.amount}" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">保存</button>
+    </div>
+  `, () => {
+    const name   = document.getElementById('f-name').value.trim();
+    const amount = parseInt(document.getElementById('f-amount').value) || 0;
+    if (!name) { alert('内容名を入力してください'); return false; }
+    pay.name   = name;
+    pay.amount = amount;
+    DB.saveMonthlyData(periodKey, data);
+    renderMonthly();
+  });
+}
+
+function deleteCustomPayment(periodKey, payId) {
+  if (!confirm('この支払いを削除しますか？')) return;
+  const data = DB.getMonthlyData(periodKey);
+  data.payments = data.payments.filter(p => p.id !== payId);
+  DB.saveMonthlyData(periodKey, data);
+  renderMonthly();
+}
+
+// --- Bonus Supply ---
+
+function showAddBonusSupply(periodKey) {
+  const mCats       = DB.getMonthlyCats();
+  const bonusPeriods = DB.getBonusPeriods();
+  const bonusCats   = DB.getBonusCats();
+
+  if (!mCats.length)        { alert('月次カテゴリを先に設定してください'); return; }
+  if (!bonusPeriods.length) { alert('ボーナス期を先に作成してください');   return; }
+  if (!bonusCats.length)    { alert('ボーナスカテゴリを先に設定してください'); return; }
+
+  const lastPeriod = bonusPeriods[bonusPeriods.length - 1];
+  const firstMCat  = mCats[0];
+  const firstBCat  = bonusCats[0];
+
+  function mItemOpts(catId) {
+    const cat = mCats.find(c => c.id === catId);
+    return cat && cat.items.length
+      ? cat.items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')
+      : '<option value="">（内容なし）</option>';
+  }
+
+  function bItemOpts(bPeriodId, bCatId) {
+    const items = DB.getBonusItems().filter(i => i.periodId === bPeriodId && i.categoryId === bCatId);
+    return items.length
+      ? items.map(i => {
+          const rem = getBonusItemRemaining(i);
+          return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
+        }).join('')
+      : '<option value="">（内容なし）</option>';
+  }
+
+  openModal('ボーナス補充を追加', `
+    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:10px">補充先（月次）</div>
+    <div class="form-group">
+      <label class="form-label">カテゴリ</label>
+      <select class="form-input" id="sup-m-cat" onchange="supUpdateMItems()">
+        ${mCats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">内容</label>
+      <select class="form-input" id="sup-m-item">
+        ${mItemOpts(firstMCat.id)}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">補充金額</label>
+      <input class="form-input" id="sup-amount" type="number" placeholder="0" inputmode="numeric">
+    </div>
+
+    <hr class="form-divider">
+    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:10px">補充元（ボーナス）</div>
+
+    <div class="form-group">
+      <label class="form-label">ボーナス期</label>
+      <select class="form-input" id="sup-b-period" onchange="supUpdateBItems()">
+        ${bonusPeriods.map((p, i) => `<option value="${p.id}" ${i === bonusPeriods.length-1 ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">ボーナスカテゴリ</label>
+      <select class="form-input" id="sup-b-cat" onchange="supUpdateBItems()">
+        ${bonusCats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">ボーナス内容</label>
+      <select class="form-input" id="sup-b-item">
+        ${bItemOpts(lastPeriod.id, firstBCat.id)}
+      </select>
+    </div>
+    <div id="sup-b-rem" class="remaining-info ok" style="display:none"></div>
+    <div class="form-group">
+      <label class="form-label">ボーナスからの補充金額</label>
+      <input class="form-input" id="sup-bonus-amount" type="number" placeholder="0" inputmode="numeric">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="modal-confirm">追加</button>
+    </div>
+  `, () => {
+    const mCatId      = document.getElementById('sup-m-cat').value;
+    const mItemId     = document.getElementById('sup-m-item').value;
+    const amount      = parseInt(document.getElementById('sup-amount').value) || 0;
+    const bPeriodId   = document.getElementById('sup-b-period').value;
+    const bCatId      = document.getElementById('sup-b-cat').value;
+    const bItemId     = document.getElementById('sup-b-item').value;
+    const bonusAmount = parseInt(document.getElementById('sup-bonus-amount').value) || 0;
+
+    if (!amount)      { alert('補充金額を入力してください'); return false; }
+    if (!bonusAmount) { alert('ボーナスからの補充金額を入力してください'); return false; }
+
+    if (bItemId) {
+      const bItem = DB.getBonusItems().find(i => i.id === bItemId);
+      if (bItem) {
+        const rem = getBonusItemRemaining(bItem);
+        if (bonusAmount > rem) {
+          alert('ボーナス残額を超えています。\n残額: ' + fmt(rem) + '\n入力金額: ' + fmt(bonusAmount));
+          return false;
+        }
+      }
+    }
+
+    const supId = genId('sup');
+    const data  = DB.getMonthlyData(periodKey);
+    const mCat  = mCats.find(c => c.id === mCatId);
+    const mItem = mCat?.items.find(i => i.id === mItemId);
+
+    data.bonusSupplies.push({
+      id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId,
+      monthlyCustomName: mItem ? null : null,
+      amount, bonusPeriodId: bPeriodId, bonusCategoryId: bCatId,
+      bonusItemId: bItemId, bonusAmount,
+    });
+    DB.saveMonthlyData(periodKey, data);
+
+    // Mirror as bonus expense
+    const bExps = DB.getBonusExpenses();
+    bExps.push({
+      id: genId('bsup'),
+      periodId: bPeriodId,
+      date: new Date().toISOString().split('T')[0],
+      categoryId: bCatId,
+      itemId: bItemId,
+      amount: bonusAmount,
+      memo: '月次補充: ' + (mCat ? mCat.name : '') + ' ' + (mItem ? mItem.name : ''),
+      source: 'bonus_supply',
+      supplyId: supId,
+    });
+    DB.saveBonusExpenses(bExps);
+
+    renderMonthly();
+    // Refresh bonus if it's the active tab to reflect new expense
+    if (state.activeTab === 'bonus') renderBonus();
+  });
+
+  setTimeout(() => supUpdateBItemRemaining(), 100);
+}
+
+// Global helpers for bonus supply form
+function supUpdateMItems() {
+  const catId = document.getElementById('sup-m-cat')?.value;
+  const sel   = document.getElementById('sup-m-item');
+  if (!sel || !catId) return;
+  const cat = DB.getMonthlyCats().find(c => c.id === catId);
+  sel.innerHTML = cat && cat.items.length
+    ? cat.items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')
+    : '<option value="">（内容なし）</option>';
+}
+
+function supUpdateBItems() {
+  const bPeriodId = document.getElementById('sup-b-period')?.value;
+  const bCatId    = document.getElementById('sup-b-cat')?.value;
+  const sel       = document.getElementById('sup-b-item');
+  if (!sel) return;
+  const items = DB.getBonusItems().filter(i => i.periodId === bPeriodId && i.categoryId === bCatId);
+  sel.innerHTML = items.length
+    ? items.map(i => {
+        const rem = getBonusItemRemaining(i);
+        return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
+      }).join('')
+    : '<option value="">（内容なし）</option>';
+  supUpdateBItemRemaining();
+}
+
+function supUpdateBItemRemaining() {
+  const sel  = document.getElementById('sup-b-item');
+  const info = document.getElementById('sup-b-rem');
+  if (!sel || !info) return;
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) { info.style.display = 'none'; return; }
+  const rem = parseInt(opt.dataset.rem || '0');
+  info.style.display = '';
+  info.className = rem <= 0 ? 'remaining-info over' : rem < 50000 ? 'remaining-info warning' : 'remaining-info ok';
+  info.textContent = '残額: ' + fmtSigned(rem);
+}
+
+function deleteBonusSupply(periodKey, supId) {
+  if (!confirm('このボーナス補充を削除しますか？\nボーナスへの支出計上も取り消されます。')) return;
+  const data = DB.getMonthlyData(periodKey);
+  data.bonusSupplies = data.bonusSupplies.filter(s => s.id !== supId);
+  DB.saveMonthlyData(periodKey, data);
+  DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== supId));
+  renderMonthly();
+  if (state.activeTab === 'bonus') renderBonus();
+}
+
+// =============================================
+// INIT
+// =============================================
+
+function init() {
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('modal-overlay')) closeModal();
+  });
+
+  // Prevent scroll bounce on iOS
+  document.addEventListener('touchmove', e => {
+    if (e.target.closest('#modal-container')) return;
+  }, { passive: false });
+
+  renderBonus();
+}
+
+document.addEventListener('DOMContentLoaded', init);

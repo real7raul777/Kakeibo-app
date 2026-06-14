@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>家計管理</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <main id="main-content">
+      <section id="tab-bonus" class="tab-content active">
+        <div id="bonus-content"></div>
+      </section>
+      <section id="tab-monthly" class="tab-content">
+        <div id="monthly-content"></div>
+      </section>
+      <section id="tab-settings" class="tab-content">
+        <div id="settings-content"></div>
+      </section>
+    </main>
+
+    <nav id="bottom-nav">
+      <button class="nav-btn active" data-tab="bonus">
+        <span class="nav-icon">💰</span>
+        <span class="nav-label">ボーナス</span>
+      </button>
+      <button class="nav-btn" data-tab="monthly">
+        <span class="nav-icon">📅</span>
+        <span class="nav-label">月次</span>
+      </button>
+      <button class="nav-btn" data-tab="settings">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">設定</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-container">
+      <div id="modal-header">
+        <h3 id="modal-title"></h3>
+        <button id="modal-close" aria-label="閉じる">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
