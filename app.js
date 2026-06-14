@@ -608,14 +608,26 @@ function renderBonus() {
 
 function sortedBonusPeriods() {
   return [...DB.getBonusPeriods()].sort((a, b) => {
-    if (a.year !== b.year) return a.year - b.year;
-    return a.season === 'summer' ? -1 : 1;
+    // Number() でキャストして string/number 混在を吸収
+    const ay = Number(a.year), by = Number(b.year);
+    if (ay !== by) return ay - by;
+    if (a.season === b.season) return 0;
+    return a.season === 'summer' ? -1 : 1; // summer < winter
   });
 }
 
 function getPrevBonusPeriod(periodId) {
+  const all    = DB.getBonusPeriods();
   const sorted = sortedBonusPeriods();
-  const idx    = sorted.findIndex(p => p.id === periodId);
+
+  // デバッグ用: ブラウザのコンソールで確認できる
+  console.log('[繰越] 登録期一覧:', all.map(p => p.id));
+  console.log('[繰越] ソート後:', sorted.map(p => p.id));
+  console.log('[繰越] 現在期ID:', JSON.stringify(periodId));
+
+  const idx = sorted.findIndex(p => String(p.id) === String(periodId));
+  console.log('[繰越] idx:', idx, '→ 前期:', idx > 0 ? sorted[idx - 1].id : 'なし');
+
   return idx > 0 ? sorted[idx - 1] : null;
 }
 
@@ -710,8 +722,7 @@ function renderBonusPeriodContent(period) {
   const unbudgeted  = available - totalBudget;
   const remaining   = available - totalSpent;
 
-  const prevPeriod = getPrevBonusPeriod(period.id);
-  const copied     = period.carryoverCopied;
+  const copied = period.carryoverCopied;
 
   return `
     <div class="card">
@@ -719,14 +730,13 @@ function renderBonusPeriodContent(period) {
         <span class="section-title">サマリー</span>
         <button class="btn btn-secondary btn-sm" onclick="showEditBonusPeriod('${period.id}')">期の設定</button>
       </div>
-      ${prevPeriod ? `
       <div class="carryover-copy-row">
         ${copied
           ? `<span class="tag tag-actual" style="padding:5px 10px">✓ 繰越コピー済み</span>
              <button class="btn btn-secondary btn-sm" onclick="copyCarryover('${period.id}')">↩ 前期から繰越をコピー</button>`
           : `<button class="btn btn-success btn-sm" onclick="copyCarryover('${period.id}')">↩ 前期から繰越をコピー</button>`
         }
-      </div>` : ''}
+      </div>
       ${carryOver > 0 ? `<div class="carryover-note">↩ 繰越額 ${fmt(carryOver)} を含む</div>` : ''}
       <div class="summary-grid mt-8">
         <div class="summary-item">
