@@ -1160,7 +1160,7 @@ function renderMonthly() {
 
   const totalPay    = calcTotalPayments(data, cats);
   const totalSupply = data.bonusSupplies.reduce((s, b) => s + b.amount, 0);
-  const balance     = data.income - totalPay;
+  const balance     = data.income + totalSupply - totalPay;
 
   document.getElementById('monthly-content').innerHTML = `
     <div class="month-nav">
