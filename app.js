@@ -604,6 +604,99 @@ function renderBonus() {
   `;
 }
 
+// --- Carryover helpers ---
+
+function sortedBonusPeriods() {
+  return [...DB.getBonusPeriods()].sort((a, b) => {
+    if (a.year !== b.year) return a.year - b.year;
+    return a.season === 'summer' ? -1 : 1;
+  });
+}
+
+function getPrevBonusPeriod(periodId) {
+  const sorted = sortedBonusPeriods();
+  const idx    = sorted.findIndex(p => p.id === periodId);
+  return idx > 0 ? sorted[idx - 1] : null;
+}
+
+function getOrCreateCarryoverCat() {
+  const cats = DB.getBonusCats();
+  let cat    = cats.find(c => c.name === '繰越');
+  if (!cat) {
+    cat = { id: genId('bcat-co'), name: '繰越' };
+    cats.push(cat);
+    DB.saveBonusCats(cats);
+  }
+  return cat;
+}
+
+function copyCarryover(periodId) {
+  const periods = DB.getBonusPeriods();
+  const period  = periods.find(p => p.id === periodId);
+  if (!period) return;
+
+  // 二重コピー防止
+  if (period.carryoverCopied) {
+    alert('この期への繰越コピーはすでに実行済みです。\n二重コピーを防ぐためキャンセルします。');
+    return;
+  }
+
+  const prevPeriod = getPrevBonusPeriod(periodId);
+  if (!prevPeriod) {
+    alert('前期が見つかりません');
+    return;
+  }
+
+  const prevItems    = DB.getBonusItems().filter(i => i.periodId === prevPeriod.id);
+  const prevExpenses = DB.getBonusExpenses().filter(e => e.periodId === prevPeriod.id);
+  const bonusCats    = DB.getBonusCats();
+
+  // 残額 > 0 の内容を抽出
+  const targets = prevItems
+    .map(item => {
+      const spent     = prevExpenses.filter(e => e.itemId === item.id).reduce((s, e) => s + e.amount, 0);
+      const remaining = item.budget - spent;
+      const cat       = bonusCats.find(c => c.id === item.categoryId);
+      return { item, remaining, catName: cat ? cat.name : '' };
+    })
+    .filter(d => d.remaining > 0);
+
+  if (targets.length === 0) {
+    alert(bonusPeriodLabel(prevPeriod) + ' に繰り越せる残額がある内容がありません');
+    return;
+  }
+
+  const listText = targets
+    .map(d => '・' + (d.catName ? d.catName + '／' : '') + d.item.name + '：' + fmt(d.remaining))
+    .join('\n');
+
+  if (!confirm(
+    bonusPeriodLabel(prevPeriod) + ' から以下の内容を繰り越しますか？\n\n' +
+    listText + '\n\n「繰越」カテゴリに追加されます。'
+  )) return;
+
+  const coCat    = getOrCreateCarryoverCat();
+  const allItems = DB.getBonusItems();
+
+  targets.forEach(({ item, remaining }) => {
+    allItems.push({
+      id:         genId('bitem-co'),
+      periodId,
+      categoryId: coCat.id,
+      name:       item.name,
+      budget:     remaining,
+    });
+  });
+  DB.saveBonusItems(allItems);
+
+  period.carryoverCopied = true;
+  DB.saveBonusPeriods(periods);
+
+  renderBonus();
+}
+
+// --- Render ---
+
 function renderBonusPeriodContent(period) {
   if (!period) return '';
   const items    = DB.getBonusItems().filter(i => i.periodId === period.id);
@@ -617,13 +710,24 @@ function renderBonusPeriodContent(period) {
   const unbudgeted  = available - totalBudget;
   const remaining   = available - totalSpent;
 
+  const prevPeriod = getPrevBonusPeriod(period.id);
+  const copied     = period.carryoverCopied;
+
   return `
     <div class="card">
       <div class="section-header">
         <span class="section-title">サマリー</span>
         <button class="btn btn-secondary btn-sm" onclick="showEditBonusPeriod('${period.id}')">期の設定</button>
       </div>
-      ${carryOver > 0 ? `<div class="carryover-note">↩ 繰越 ${fmt(carryOver)} を含む</div>` : ''}
+      ${prevPeriod ? `
+      <div class="carryover-copy-row">
+        ${copied
+          ? `<span class="tag tag-actual" style="padding:5px 10px">✓ 繰越コピー済み</span>
+             <button class="btn btn-secondary btn-sm" onclick="copyCarryover('${period.id}')">↩ 前期から繰越をコピー</button>`
+          : `<button class="btn btn-success btn-sm" onclick="copyCarryover('${period.id}')">↩ 前期から繰越をコピー</button>`
+        }
+      </div>` : ''}
+      ${carryOver > 0 ? `<div class="carryover-note">↩ 繰越額 ${fmt(carryOver)} を含む</div>` : ''}
       <div class="summary-grid mt-8">
         <div class="summary-item">
           <div class="summary-label">ボーナス総額</div>
