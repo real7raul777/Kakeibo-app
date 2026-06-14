@@ -517,6 +517,52 @@ body {
   color: var(--text-muted);
 }
 
+/* ===== Login Screen ===== */
+#login-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+#login-overlay.hidden { display: none; }
+
+#login-box {
+  background: #fff;
+  border-radius: 20px;
+  padding: 36px 24px 28px;
+  width: 100%;
+  max-width: 360px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.10);
+}
+
+.login-logo {
+  font-size: 52px;
+  text-align: center;
+  margin-bottom: 6px;
+  line-height: 1;
+}
+.login-title {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 28px;
+  color: var(--text);
+}
+
+.login-error {
+  background: var(--danger-light);
+  color: var(--danger);
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
 /* ===== Loading Overlay ===== */
 #loading-overlay {
   position: fixed;

@@ -77,6 +77,120 @@ const DB = {
   },
 };
 
+// ====================== AUTH ======================
+
+const SESSION_KEY = 'kakeibo_session';
+
+function isLoggedIn() {
+  return sessionStorage.getItem(SESSION_KEY) === '1';
+}
+
+function setLoggedIn() {
+  sessionStorage.setItem(SESSION_KEY, '1');
+}
+
+function confirmLogout() {
+  if (!confirm('ログアウトしますか？')) return;
+  sessionStorage.removeItem(SESSION_KEY);
+  location.reload();
+}
+
+// config/password ドキュメントを取得（未存在なら初期値で作成）
+async function getPasswordDoc() {
+  const ref  = fsDb.collection('config').doc('password');
+  const snap = await ref.get();
+  if (!snap.exists) {
+    await ref.set({ id: 'admin', password: 'kakeibo2026' });
+    return { id: 'admin', password: 'kakeibo2026' };
+  }
+  return snap.data();
+}
+
+async function attemptLogin() {
+  const btn     = document.getElementById('login-btn');
+  const errorEl = document.getElementById('login-error');
+  const inputId = document.getElementById('login-id').value.trim();
+  const inputPw = document.getElementById('login-pw').value;
+
+  errorEl.classList.add('hidden');
+
+  if (!inputId || !inputPw) {
+    errorEl.textContent = 'IDとパスワードを入力してください';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled    = true;
+  btn.textContent = '確認中...';
+
+  try {
+    const data = await getPasswordDoc();
+    if (data.id === inputId && data.password === inputPw) {
+      setLoggedIn();
+      document.getElementById('login-overlay').classList.add('hidden');
+      await startApp();
+    } else {
+      errorEl.textContent = 'IDまたはパスワードが正しくありません';
+      errorEl.classList.remove('hidden');
+      btn.disabled    = false;
+      btn.textContent = 'ログイン';
+      document.getElementById('login-pw').value = '';
+      document.getElementById('login-pw').focus();
+    }
+  } catch (err) {
+    errorEl.textContent = 'エラーが発生しました: ' + err.message;
+    errorEl.classList.remove('hidden');
+    btn.disabled    = false;
+    btn.textContent = 'ログイン';
+  }
+}
+
+async function doChangePassword() {
+  const newId  = document.getElementById('f-new-id').value.trim();
+  const newPw  = document.getElementById('f-new-pw').value;
+  const confirm = document.getElementById('f-confirm-pw').value;
+
+  if (!newId)          { alert('IDを入力してください');        return; }
+  if (!newPw)          { alert('パスワードを入力してください'); return; }
+  if (newPw !== confirm) { alert('パスワードが一致しません');  return; }
+
+  const btn = document.getElementById('pw-change-btn');
+  btn.disabled    = true;
+  btn.textContent = '変更中...';
+
+  try {
+    await fsDb.collection('config').doc('password').set({ id: newId, password: newPw });
+    closeModal();
+    alert('変更しました。次回ログインから新しいIDとパスワードが有効になります。');
+  } catch (err) {
+    alert('エラー: ' + err.message);
+    btn.disabled    = false;
+    btn.textContent = '変更する';
+  }
+}
+
+function showChangePassword() {
+  openModal('パスワード変更', `
+    <div class="form-group">
+      <label class="form-label">新しいID</label>
+      <input class="form-input" id="f-new-id" type="text" autocomplete="off" placeholder="新しいID">
+    </div>
+    <div class="form-group">
+      <label class="form-label">新しいパスワード</label>
+      <input class="form-input" id="f-new-pw" type="password" autocomplete="new-password" placeholder="新しいパスワード">
+    </div>
+    <div class="form-group">
+      <label class="form-label">パスワード（確認）</label>
+      <input class="form-input" id="f-confirm-pw" type="password" autocomplete="new-password" placeholder="もう一度入力">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      <button class="btn btn-primary" id="pw-change-btn" onclick="doChangePassword()">変更する</button>
+    </div>
+  `);
+  setTimeout(() => document.getElementById('f-new-id')?.focus(), 100);
+}
+
 // ====================== STATE ======================
 
 const state = {
@@ -211,6 +325,16 @@ function renderSettings() {
         <button class="btn btn-primary btn-sm" onclick="showAddMonthlyCat()">＋ 追加</button>
       </div>
       <div id="monthly-cat-list">${renderMonthlyCatList()}</div>
+    </div>
+
+    <div class="card">
+      <div class="section-header">
+        <span class="section-title">アカウント</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-secondary" onclick="showChangePassword()">🔑 パスワード変更</button>
+        <button class="btn btn-danger" onclick="confirmLogout()">ログアウト</button>
+      </div>
     </div>
   `;
 }
@@ -1403,8 +1527,10 @@ function deleteBonusSupply(periodKey, supId) {
 // INIT
 // =============================================
 
-async function init() {
+// アプリ本体の起動（ログイン後に呼ぶ）
+async function startApp() {
   const overlay = document.getElementById('loading-overlay');
+  overlay.classList.remove('hidden');
 
   try {
     await loadAll();
@@ -1437,6 +1563,25 @@ async function init() {
   }, { passive: false });
 
   renderBonus();
+}
+
+function init() {
+  if (isLoggedIn()) {
+    // セッション継続中 → そのままアプリ起動
+    startApp();
+  } else {
+    // 未ログイン → ログイン画面を表示
+    document.getElementById('loading-overlay').classList.add('hidden');
+    document.getElementById('login-overlay').classList.remove('hidden');
+    setTimeout(() => document.getElementById('login-id')?.focus(), 100);
+
+    // Enter キーでログイン
+    ['login-id', 'login-pw'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') attemptLogin();
+      });
+    });
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
