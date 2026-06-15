@@ -1350,6 +1350,7 @@ function renderBonusSupplies(periodKey, data, cats) {
           <li class="exp-item">
             <div class="exp-info">
               <div class="exp-date fw-bold">${mCat ? esc(mCat.name) : ''}／${mItem ? esc(mItem.name) : (sup.monthlyCustomName || '—')}</div>
+              ${sup.label ? `<div class="exp-memo">${esc(sup.label)}</div>` : ''}
               ${sourceHtml}
             </div>
             <div class="exp-right">
@@ -1535,6 +1536,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
   const initMCat    = mCats.find(c => c.id === initMCatId) || mCats[0];
   const initMItemId = sup ? sup.monthlyItemId : (initMCat.items[0]?.id || '');
   const initAmount  = sup ? sup.amount : '';
+  const initLabel   = sup ? (sup.label || '') : '';
 
   let initBPeriodId = bonusPeriods.length ? bonusPeriods[bonusPeriods.length - 1].id : '';
   let initBCatId    = bonusCats.length ? bonusCats[0].id : '';
@@ -1557,6 +1559,10 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
       <select class="form-input" id="sup-m-cat" onchange="supUpdateMItems()">
         ${mCats.map(c => `<option value="${c.id}" ${c.id === initMCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">名目<span class="form-label-optional">任意</span></label>
+      <input class="form-input" id="sup-label" type="text" value="${esc(initLabel)}" placeholder="例：楽天カード6月分" autocomplete="off">
     </div>
     <div class="form-group">
       <label class="form-label">内容</label>
@@ -1602,6 +1608,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
   `, () => {
     const mCatId  = document.getElementById('sup-m-cat').value;
     const mItemId = document.getElementById('sup-m-item').value;
+    const label   = document.getElementById('sup-label').value.trim();
     const amount  = parseInt(document.getElementById('sup-amount').value) || 0;
     if (!amount) { alert('補充金額を入力してください'); return false; }
 
@@ -1641,7 +1648,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
 
     if (mode === 'add') {
       const supId = genId('sup');
-      data.bonusSupplies.push({ id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId, amount, bonusSources });
+      data.bonusSupplies.push({ id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources });
       DB.saveMonthlyData(periodKey, data);
       if (bonusSources.length) {
         const bExps = DB.getBonusExpenses();
@@ -1654,7 +1661,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     } else {
       const supIdx = data.bonusSupplies.findIndex(s => s.id === sup.id);
       if (supIdx < 0) return false;
-      data.bonusSupplies[supIdx] = { id: sup.id, monthlyCategoryId: mCatId, monthlyItemId: mItemId, amount, bonusSources };
+      data.bonusSupplies[supIdx] = { id: sup.id, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources };
       DB.saveMonthlyData(periodKey, data);
       DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== sup.id));
       if (bonusSources.length) {
