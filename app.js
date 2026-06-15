@@ -199,6 +199,8 @@ const state = {
   monthlyPeriodKey: null,
 };
 
+let _supEditSources = null; // null = 追加モード; array = 編集時のプリセット
+
 // ====================== UTILS ======================
 
 function esc(str) {
@@ -1319,24 +1321,40 @@ function renderBonusSupplies(periodKey, data, cats) {
   if (!data.bonusSupplies.length) return '<div class="empty-state">ボーナス補充がありません</div>';
   const bonusCats    = DB.getBonusCats();
   const bonusPeriods = DB.getBonusPeriods();
+  const bonusItems   = DB.getBonusItems();
   return `
     <ul class="exp-list">
       ${data.bonusSupplies.map(sup => {
-        const mCat   = cats.find(c => c.id === sup.monthlyCategoryId);
-        const mItem  = mCat?.items.find(i => i.id === sup.monthlyItemId);
-        const bPer   = bonusPeriods.find(p => p.id === sup.bonusPeriodId);
-        const bCat   = bonusCats.find(c => c.id === sup.bonusCategoryId);
-        const bItems = DB.getBonusItems().filter(i => i.periodId === sup.bonusPeriodId);
-        const bItem  = bItems.find(i => i.id === sup.bonusItemId);
+        const mCat  = cats.find(c => c.id === sup.monthlyCategoryId);
+        const mItem = mCat?.items.find(i => i.id === sup.monthlyItemId);
+
+        let sourceHtml;
+        if (sup.bonusSources && sup.bonusSources.length > 0) {
+          sourceHtml = sup.bonusSources.map(src => {
+            const bPer  = bonusPeriods.find(p => p.id === src.periodId);
+            const bCat  = bonusCats.find(c => c.id === src.categoryId);
+            const bItem = bonusItems.find(i => i.id === src.itemId);
+            return `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''} (${fmt(src.amount)})</div>`;
+          }).join('');
+        } else if (sup.bonusPeriodId) {
+          const bPer  = bonusPeriods.find(p => p.id === sup.bonusPeriodId);
+          const bCat  = bonusCats.find(c => c.id === sup.bonusCategoryId);
+          const bItem = bonusItems.find(i => i.id === sup.bonusItemId);
+          sourceHtml = `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''}</div>
+            <div class="exp-memo">ボーナスから ${fmt(sup.bonusAmount)}</div>`;
+        } else {
+          sourceHtml = '<div class="supply-arrow" style="color:var(--text-muted)">未紐付け</div>';
+        }
+
         return `
           <li class="exp-item">
             <div class="exp-info">
               <div class="exp-date fw-bold">${mCat ? esc(mCat.name) : ''}／${mItem ? esc(mItem.name) : (sup.monthlyCustomName || '—')}</div>
-              <div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''}</div>
-              <div class="exp-memo">ボーナスから ${fmt(sup.bonusAmount)}</div>
+              ${sourceHtml}
             </div>
             <div class="exp-right">
               <span class="exp-amount">${fmt(sup.amount)}</span>
+              <button class="btn btn-secondary btn-xs" onclick="showEditBonusSupply('${periodKey}','${sup.id}')">編集</button>
               <button class="btn btn-danger btn-xs" onclick="deleteBonusSupply('${periodKey}','${sup.id}')">削除</button>
             </div>
           </li>
@@ -1486,141 +1504,174 @@ function deleteCustomPayment(periodKey, payId) {
 // --- Bonus Supply ---
 
 function showAddBonusSupply(periodKey) {
-  const mCats       = DB.getMonthlyCats();
+  _supEditSources = null;
+  _openBonusSupplyModal('add', periodKey, null);
+}
+
+function showEditBonusSupply(periodKey, supId) {
+  const data = DB.getMonthlyData(periodKey);
+  const sup  = data.bonusSupplies.find(s => s.id === supId);
+  if (!sup) return;
+  if (sup.bonusSources) {
+    _supEditSources = sup.bonusSources;
+  } else if (sup.bonusPeriodId) {
+    _supEditSources = [{ periodId: sup.bonusPeriodId, categoryId: sup.bonusCategoryId, itemId: sup.bonusItemId, amount: sup.bonusAmount || 0 }];
+  } else {
+    _supEditSources = [];
+  }
+  _openBonusSupplyModal('edit', periodKey, sup);
+}
+
+function _openBonusSupplyModal(mode, periodKey, sup) {
+  const mCats        = DB.getMonthlyCats();
   const bonusPeriods = DB.getBonusPeriods();
-  const bonusCats   = DB.getBonusCats();
+  const bonusCats    = DB.getBonusCats();
 
-  if (!mCats.length)        { alert('月次カテゴリを先に設定してください'); return; }
-  if (!bonusPeriods.length) { alert('ボーナス期を先に作成してください');   return; }
-  if (!bonusCats.length)    { alert('ボーナスカテゴリを先に設定してください'); return; }
+  if (!mCats.length) { alert('月次カテゴリを先に設定してください'); return; }
 
-  const lastPeriod = bonusPeriods[bonusPeriods.length - 1];
-  const firstMCat  = mCats[0];
-  const firstBCat  = bonusCats[0];
+  const hasBonusData = bonusPeriods.length > 0 && bonusCats.length > 0;
+
+  const initMCatId  = sup ? sup.monthlyCategoryId : mCats[0].id;
+  const initMCat    = mCats.find(c => c.id === initMCatId) || mCats[0];
+  const initMItemId = sup ? sup.monthlyItemId : (initMCat.items[0]?.id || '');
+  const initAmount  = sup ? sup.amount : '';
+
+  let initBPeriodId = bonusPeriods.length ? bonusPeriods[bonusPeriods.length - 1].id : '';
+  let initBCatId    = bonusCats.length ? bonusCats[0].id : '';
+  if (_supEditSources && _supEditSources.length > 0) {
+    initBPeriodId = _supEditSources[0].periodId;
+    initBCatId    = _supEditSources[0].categoryId;
+  }
 
   function mItemOpts(catId) {
     const cat = mCats.find(c => c.id === catId);
     return cat && cat.items.length
-      ? cat.items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')
+      ? cat.items.map(i => `<option value="${i.id}" ${i.id === initMItemId ? 'selected' : ''}>${esc(i.name)}</option>`).join('')
       : '<option value="">（内容なし）</option>';
   }
 
-  function bItemOpts(bPeriodId, bCatId) {
-    const items = DB.getBonusItems().filter(i => i.periodId === bPeriodId && i.categoryId === bCatId);
-    return items.length
-      ? items.map(i => {
-          const rem = getBonusItemRemaining(i);
-          return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
-        }).join('')
-      : '<option value="">（内容なし）</option>';
-  }
-
-  openModal('ボーナス補充を追加', `
-    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:10px">補充先（月次）</div>
+  openModal(mode === 'add' ? 'ボーナス補充を追加' : 'ボーナス補充を編集', `
+    <div class="form-section-label">補充先（月次）</div>
     <div class="form-group">
       <label class="form-label">カテゴリ</label>
       <select class="form-input" id="sup-m-cat" onchange="supUpdateMItems()">
-        ${mCats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+        ${mCats.map(c => `<option value="${c.id}" ${c.id === initMCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
       </select>
     </div>
     <div class="form-group">
       <label class="form-label">内容</label>
       <select class="form-input" id="sup-m-item">
-        ${mItemOpts(firstMCat.id)}
+        ${mItemOpts(initMCatId)}
       </select>
     </div>
     <div class="form-group">
       <label class="form-label">補充金額</label>
-      <input class="form-input" id="sup-amount" type="number" placeholder="0" inputmode="numeric">
+      <input class="form-input" id="sup-amount" type="number" value="${initAmount}" placeholder="0" inputmode="numeric">
     </div>
 
     <hr class="form-divider">
-    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:10px">補充元（ボーナス）</div>
+    <div class="form-section-label">補充元（ボーナス）<span class="form-label-optional">任意</span></div>
 
-    <div class="form-group">
-      <label class="form-label">ボーナス期</label>
-      <select class="form-input" id="sup-b-period" onchange="supUpdateBItems()">
-        ${bonusPeriods.map((p, i) => `<option value="${p.id}" ${i === bonusPeriods.length-1 ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">ボーナスカテゴリ</label>
-      <select class="form-input" id="sup-b-cat" onchange="supUpdateBItems()">
-        ${bonusCats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">ボーナス内容</label>
-      <select class="form-input" id="sup-b-item">
-        ${bItemOpts(lastPeriod.id, firstBCat.id)}
-      </select>
-    </div>
-    <div id="sup-b-rem" class="remaining-info ok" style="display:none"></div>
-    <div class="form-group">
-      <label class="form-label">ボーナスからの補充金額</label>
-      <input class="form-input" id="sup-bonus-amount" type="number" placeholder="0" inputmode="numeric">
-    </div>
+    ${hasBonusData ? `
+      <div class="form-group">
+        <label class="form-label">ボーナス期</label>
+        <select class="form-input" id="sup-b-period" onchange="supUpdateBItems()">
+          ${bonusPeriods.map(p => `<option value="${p.id}" ${p.id === initBPeriodId ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">ボーナスカテゴリ</label>
+        <select class="form-input" id="sup-b-cat" onchange="supUpdateBItems()">
+          ${bonusCats.map(c => `<option value="${c.id}" ${c.id === initBCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">ボーナス内容<span class="form-label-optional">複数選択可</span></label>
+        <div class="sup-items-box" id="sup-b-items-list"></div>
+      </div>
+      <div class="sup-total-row">
+        <span>補充合計</span>
+        <span id="sup-bonus-total" class="positive">¥0</span>
+      </div>
+    ` : '<div class="form-hint" style="margin-bottom:8px">ボーナス期・カテゴリを設定すると補充元を紐付けられます</div>'}
+
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
-      <button class="btn btn-primary" id="modal-confirm">追加</button>
+      <button class="btn btn-primary" id="modal-confirm">${mode === 'add' ? '追加' : '保存'}</button>
     </div>
   `, () => {
-    const mCatId      = document.getElementById('sup-m-cat').value;
-    const mItemId     = document.getElementById('sup-m-item').value;
-    const amount      = parseInt(document.getElementById('sup-amount').value) || 0;
-    const bPeriodId   = document.getElementById('sup-b-period').value;
-    const bCatId      = document.getElementById('sup-b-cat').value;
-    const bItemId     = document.getElementById('sup-b-item').value;
-    const bonusAmount = parseInt(document.getElementById('sup-bonus-amount').value) || 0;
+    const mCatId  = document.getElementById('sup-m-cat').value;
+    const mItemId = document.getElementById('sup-m-item').value;
+    const amount  = parseInt(document.getElementById('sup-amount').value) || 0;
+    if (!amount) { alert('補充金額を入力してください'); return false; }
 
-    if (!amount)      { alert('補充金額を入力してください'); return false; }
-    if (!bonusAmount) { alert('ボーナスからの補充金額を入力してください'); return false; }
+    // Collect bonus sources
+    const bonusSources = [];
+    if (hasBonusData) {
+      const bPeriodId = document.getElementById('sup-b-period')?.value;
+      const bCatId    = document.getElementById('sup-b-cat')?.value;
+      document.querySelectorAll('#sup-b-items-list input[type=checkbox]:checked').forEach(cb => {
+        const amt = parseInt(document.getElementById('sup-amt-' + cb.value)?.value || '0') || 0;
+        if (amt > 0) bonusSources.push({ periodId: bPeriodId, categoryId: bCatId, itemId: cb.value, amount: amt });
+      });
+    }
 
-    if (bItemId) {
-      const bItem = DB.getBonusItems().find(i => i.id === bItemId);
+    // Validate bonus remaining for each source
+    for (const src of bonusSources) {
+      const bItem = DB.getBonusItems().find(i => i.id === src.itemId);
       if (bItem) {
-        const rem = getBonusItemRemaining(bItem);
-        if (bonusAmount > rem) {
-          alert('ボーナス残額を超えています。\n残額: ' + fmt(rem) + '\n入力金額: ' + fmt(bonusAmount));
+        let rem = getBonusItemRemaining(bItem);
+        // In edit mode: add back amount already allocated to this supply's item
+        if (sup) {
+          const oldSrc = (sup.bonusSources || []).find(s => s.itemId === src.itemId);
+          if (oldSrc) rem += oldSrc.amount;
+          else if (!sup.bonusSources && sup.bonusItemId === src.itemId) rem += (sup.bonusAmount || 0);
+        }
+        if (src.amount > rem) {
+          alert(`「${bItem.name}」のボーナス残額を超えています。\n残額: ${fmt(rem)}\n入力金額: ${fmt(src.amount)}`);
           return false;
         }
       }
     }
 
-    const supId = genId('sup');
     const data  = DB.getMonthlyData(periodKey);
     const mCat  = mCats.find(c => c.id === mCatId);
     const mItem = mCat?.items.find(i => i.id === mItemId);
+    const memo  = '月次補充: ' + (mCat ? mCat.name : '') + ' ' + (mItem ? mItem.name : '');
 
-    data.bonusSupplies.push({
-      id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId,
-      monthlyCustomName: mItem ? null : null,
-      amount, bonusPeriodId: bPeriodId, bonusCategoryId: bCatId,
-      bonusItemId: bItemId, bonusAmount,
-    });
-    DB.saveMonthlyData(periodKey, data);
-
-    // Mirror as bonus expense
-    const bExps = DB.getBonusExpenses();
-    bExps.push({
-      id: genId('bsup'),
-      periodId: bPeriodId,
-      date: new Date().toISOString().split('T')[0],
-      categoryId: bCatId,
-      itemId: bItemId,
-      amount: bonusAmount,
-      memo: '月次補充: ' + (mCat ? mCat.name : '') + ' ' + (mItem ? mItem.name : ''),
-      source: 'bonus_supply',
-      supplyId: supId,
-    });
-    DB.saveBonusExpenses(bExps);
+    if (mode === 'add') {
+      const supId = genId('sup');
+      data.bonusSupplies.push({ id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId, amount, bonusSources });
+      DB.saveMonthlyData(periodKey, data);
+      if (bonusSources.length) {
+        const bExps = DB.getBonusExpenses();
+        bonusSources.forEach(src => {
+          bExps.push({ id: genId('bsup'), periodId: src.periodId, date: new Date().toISOString().split('T')[0],
+            categoryId: src.categoryId, itemId: src.itemId, amount: src.amount, memo, source: 'bonus_supply', supplyId: supId });
+        });
+        DB.saveBonusExpenses(bExps);
+      }
+    } else {
+      const supIdx = data.bonusSupplies.findIndex(s => s.id === sup.id);
+      if (supIdx < 0) return false;
+      data.bonusSupplies[supIdx] = { id: sup.id, monthlyCategoryId: mCatId, monthlyItemId: mItemId, amount, bonusSources };
+      DB.saveMonthlyData(periodKey, data);
+      DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== sup.id));
+      if (bonusSources.length) {
+        const bExps = DB.getBonusExpenses();
+        bonusSources.forEach(src => {
+          bExps.push({ id: genId('bsup'), periodId: src.periodId, date: new Date().toISOString().split('T')[0],
+            categoryId: src.categoryId, itemId: src.itemId, amount: src.amount, memo, source: 'bonus_supply', supplyId: sup.id });
+        });
+        DB.saveBonusExpenses(bExps);
+      }
+    }
 
     renderMonthly();
-    // Refresh bonus if it's the active tab to reflect new expense
     if (state.activeTab === 'bonus') renderBonus();
   });
 
-  setTimeout(() => supUpdateBItemRemaining(), 100);
+  if (hasBonusData) setTimeout(() => supUpdateBItems(), 100);
 }
 
 // Global helpers for bonus supply form
@@ -1637,28 +1688,69 @@ function supUpdateMItems() {
 function supUpdateBItems() {
   const bPeriodId = document.getElementById('sup-b-period')?.value;
   const bCatId    = document.getElementById('sup-b-cat')?.value;
-  const sel       = document.getElementById('sup-b-item');
-  if (!sel) return;
+  const container = document.getElementById('sup-b-items-list');
+  if (!container) return;
+
   const items = DB.getBonusItems().filter(i => i.periodId === bPeriodId && i.categoryId === bCatId);
-  sel.innerHTML = items.length
-    ? items.map(i => {
-        const rem = getBonusItemRemaining(i);
-        return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
-      }).join('')
-    : '<option value="">（内容なし）</option>';
-  supUpdateBItemRemaining();
+  if (!items.length) {
+    container.innerHTML = '<div style="padding:6px;color:var(--text-muted);font-size:12px">内容がありません</div>';
+    supRecalcTotal();
+    return;
+  }
+
+  container.innerHTML = items.map(item => {
+    const rem    = getBonusItemRemaining(item);
+    const clsRem = rem <= 0 ? 'negative' : 'positive';
+    return `
+      <div class="sup-chk-row">
+        <label class="sup-chk-label">
+          <input type="checkbox" value="${item.id}" data-rem="${rem}" onchange="supToggleBItem(this)">
+          <span class="sup-chk-name">${esc(item.name)}</span>
+          <span class="sup-chk-rem ${clsRem}">${fmtSigned(rem)}</span>
+        </label>
+        <div class="sup-chk-amt" id="sup-chk-amt-${item.id}" style="display:none">
+          <input class="form-input" type="number" id="sup-amt-${item.id}" value="${Math.max(0, rem)}" inputmode="numeric" oninput="supRecalcTotal()">
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Apply pre-selection in edit mode
+  if (_supEditSources) {
+    _supEditSources.forEach(src => {
+      if (src.periodId === bPeriodId && src.categoryId === bCatId) {
+        const cb = container.querySelector(`input[type=checkbox][value="${src.itemId}"]`);
+        if (cb) {
+          cb.checked = true;
+          const amtDiv = document.getElementById('sup-chk-amt-' + src.itemId);
+          if (amtDiv) amtDiv.style.display = '';
+          const amtInput = document.getElementById('sup-amt-' + src.itemId);
+          if (amtInput) amtInput.value = src.amount;
+        }
+      }
+    });
+  }
+
+  supRecalcTotal();
 }
 
-function supUpdateBItemRemaining() {
-  const sel  = document.getElementById('sup-b-item');
-  const info = document.getElementById('sup-b-rem');
-  if (!sel || !info) return;
-  const opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.value) { info.style.display = 'none'; return; }
-  const rem = parseInt(opt.dataset.rem || '0');
-  info.style.display = '';
-  info.className = rem <= 0 ? 'remaining-info over' : rem < 50000 ? 'remaining-info warning' : 'remaining-info ok';
-  info.textContent = '残額: ' + fmtSigned(rem);
+function supToggleBItem(cb) {
+  const amtDiv = document.getElementById('sup-chk-amt-' + cb.value);
+  if (amtDiv) amtDiv.style.display = cb.checked ? '' : 'none';
+  supRecalcTotal();
+}
+
+function supRecalcTotal() {
+  let total = 0;
+  document.querySelectorAll('#sup-b-items-list input[type=checkbox]:checked').forEach(cb => {
+    total += parseInt(document.getElementById('sup-amt-' + cb.value)?.value || '0') || 0;
+  });
+  const totalEl = document.getElementById('sup-bonus-total');
+  if (totalEl) totalEl.textContent = fmt(total);
+  if (total > 0) {
+    const supAmountEl = document.getElementById('sup-amount');
+    if (supAmountEl && !supAmountEl.value) supAmountEl.value = total;
+  }
 }
 
 function deleteBonusSupply(periodKey, supId) {
