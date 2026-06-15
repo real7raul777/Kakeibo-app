@@ -647,10 +647,14 @@ function copyCarryover(periodId) {
   const period  = periods.find(p => p.id === periodId);
   if (!period) return;
 
-  // 二重コピー防止
   if (period.carryoverCopied) {
-    alert('この期への繰越コピーはすでに実行済みです。\n二重コピーを防ぐためキャンセルします。');
-    return;
+    if (!confirm('既に繰越コピー済みです。再度コピーしますか？\n繰越カテゴリの内容が上書きされます。')) return;
+    const existingCoCat = DB.getBonusCats().find(c => c.name === '繰越');
+    if (existingCoCat) {
+      DB.saveBonusItems(DB.getBonusItems().filter(
+        i => !(i.periodId === periodId && i.categoryId === existingCoCat.id)
+      ));
+    }
   }
 
   const prevPeriod = getPrevBonusPeriod(periodId);
@@ -814,22 +818,26 @@ function renderBonusCatBlock(cat, period, allItems, allExpenses) {
         const pct   = item.budget > 0 ? Math.min(100, Math.round((spent / item.budget) * 100)) : 0;
         const cls   = pct >= 100 ? 'over' : pct >= 80 ? 'almost' : '';
         return `
-          <div class="item-row">
-            <div class="item-info">
-              <div class="item-name">${esc(item.name)}</div>
-              ${item.memo ? `<div class="item-sub">${esc(item.memo)}</div>` : ''}
-              <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
-            </div>
-            <div class="item-right">
-              <div class="item-amounts">
-                <span class="tag tag-budget">${fmt(item.budget)}</span>
-                <span class="tag tag-actual">${fmt(spent)}</span>
-                <span class="tag ${rem < 0 ? 'tag-over' : 'tag-remaining'}">${fmtSigned(rem)}</span>
+          <div class="bitem-row">
+            <div class="bitem-head">
+              <div class="bitem-name-wrap">
+                <div class="item-name">${esc(item.name)}</div>
+                ${item.memo ? `<div class="item-sub">${esc(item.memo)}</div>` : ''}
               </div>
-              ${idx > 0 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusItem('${item.id}',-1)">↑</button>` : ''}
-              ${idx < items.length - 1 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusItem('${item.id}',1)">↓</button>` : ''}
-              <button class="btn btn-secondary btn-xs" onclick="showEditBonusItem('${item.id}','${period.id}')">編集</button>
-              <button class="btn btn-danger btn-xs" onclick="deleteBonusItem('${item.id}')">削除</button>
+              <div class="bitem-btns">
+                <button class="btn btn-secondary btn-xs" style="visibility:${idx > 0 ? 'visible' : 'hidden'}" onclick="moveBonusItem('${item.id}',-1)">↑</button>
+                <button class="btn btn-secondary btn-xs" style="visibility:${idx < items.length - 1 ? 'visible' : 'hidden'}" onclick="moveBonusItem('${item.id}',1)">↓</button>
+                <button class="btn btn-secondary btn-xs" onclick="showEditBonusItem('${item.id}','${period.id}')">編集</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteBonusItem('${item.id}')">削除</button>
+              </div>
+            </div>
+            <div class="bitem-foot">
+              <div class="bitem-amounts">
+                <span class="tag tag-budget">予算 ${fmt(item.budget)}</span>
+                <span class="tag tag-actual">実績 ${fmt(spent)}</span>
+                <span class="tag ${rem < 0 ? 'tag-over' : 'tag-remaining'}">残 ${fmtSigned(rem)}</span>
+              </div>
+              <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
             </div>
           </div>
         `;

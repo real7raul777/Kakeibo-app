@@ -241,6 +241,42 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* ===== Bonus Item Rows ===== */
+.bitem-row {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.bitem-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.bitem-name-wrap { flex: 1; min-width: 0; }
+.bitem-btns {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.bitem-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bitem-amounts {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.bitem-foot .progress-bar {
+  flex: 1;
+  margin-top: 0;
+  min-width: 30px;
+}
+
 /* ===== Progress Bar ===== */
 .progress-bar {
   height: 4px;
