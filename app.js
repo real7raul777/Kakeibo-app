@@ -808,7 +808,7 @@ function renderBonusCatBlock(cat, period, allItems, allExpenses) {
         <span class="tag tag-actual">実績 ${fmt(catSpent)}</span>
         <span class="tag ${catRem < 0 ? 'tag-over' : 'tag-remaining'}">残 ${fmtSigned(catRem)}</span>
       </div>
-      ${items.map(item => {
+      ${items.map((item, idx) => {
         const spent = allExpenses.filter(e => e.itemId === item.id).reduce((s, e) => s + e.amount, 0);
         const rem   = item.budget - spent;
         const pct   = item.budget > 0 ? Math.min(100, Math.round((spent / item.budget) * 100)) : 0;
@@ -817,6 +817,7 @@ function renderBonusCatBlock(cat, period, allItems, allExpenses) {
           <div class="item-row">
             <div class="item-info">
               <div class="item-name">${esc(item.name)}</div>
+              ${item.memo ? `<div class="item-sub">${esc(item.memo)}</div>` : ''}
               <div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div>
             </div>
             <div class="item-right">
@@ -825,6 +826,8 @@ function renderBonusCatBlock(cat, period, allItems, allExpenses) {
                 <span class="tag tag-actual">${fmt(spent)}</span>
                 <span class="tag ${rem < 0 ? 'tag-over' : 'tag-remaining'}">${fmtSigned(rem)}</span>
               </div>
+              ${idx > 0 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusItem('${item.id}',-1)">↑</button>` : ''}
+              ${idx < items.length - 1 ? `<button class="btn btn-secondary btn-xs" onclick="moveBonusItem('${item.id}',1)">↓</button>` : ''}
               <button class="btn btn-secondary btn-xs" onclick="showEditBonusItem('${item.id}','${period.id}')">編集</button>
               <button class="btn btn-danger btn-xs" onclick="deleteBonusItem('${item.id}')">削除</button>
             </div>
@@ -973,6 +976,10 @@ function showAddBonusItem(catId, periodId) {
       <label class="form-label">予算金額</label>
       <input class="form-input" id="f-budget" type="number" placeholder="150000" inputmode="numeric">
     </div>
+    <div class="form-group">
+      <label class="form-label">メモ（任意）</label>
+      <input class="form-input" id="f-memo" type="text" placeholder="メモを入力" autocomplete="off">
+    </div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" id="modal-confirm">追加</button>
@@ -980,9 +987,10 @@ function showAddBonusItem(catId, periodId) {
   `, () => {
     const name   = document.getElementById('f-name').value.trim();
     const budget = parseInt(document.getElementById('f-budget').value) || 0;
+    const memo   = document.getElementById('f-memo').value.trim();
     if (!name) { alert('内容名を入力してください'); return false; }
     const items = DB.getBonusItems();
-    items.push({ id: genId('bitem'), periodId, categoryId: catId, name, budget });
+    items.push({ id: genId('bitem'), periodId, categoryId: catId, name, budget, memo });
     DB.saveBonusItems(items);
     renderBonus();
   });
@@ -1002,6 +1010,10 @@ function showEditBonusItem(itemId) {
       <label class="form-label">予算金額</label>
       <input class="form-input" id="f-budget" type="number" value="${item.budget}" inputmode="numeric">
     </div>
+    <div class="form-group">
+      <label class="form-label">メモ（任意）</label>
+      <input class="form-input" id="f-memo" type="text" value="${esc(item.memo || '')}" autocomplete="off">
+    </div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" id="modal-confirm">保存</button>
@@ -1009,9 +1021,11 @@ function showEditBonusItem(itemId) {
   `, () => {
     const name   = document.getElementById('f-name').value.trim();
     const budget = parseInt(document.getElementById('f-budget').value) || 0;
+    const memo   = document.getElementById('f-memo').value.trim();
     if (!name) { alert('内容名を入力してください'); return false; }
     item.name   = name;
     item.budget = budget;
+    item.memo   = memo;
     DB.saveBonusItems(items);
     renderBonus();
   });
@@ -1021,6 +1035,23 @@ function deleteBonusItem(itemId) {
   if (!confirm('この内容を削除しますか？\n関連する支出履歴も削除されます。')) return;
   DB.saveBonusItems(DB.getBonusItems().filter(i => i.id !== itemId));
   DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.itemId !== itemId));
+  renderBonus();
+}
+
+function moveBonusItem(itemId, dir) {
+  const allItems = DB.getBonusItems();
+  const item = allItems.find(i => i.id === itemId);
+  if (!item) return;
+  const groupIndices = allItems
+    .map((it, idx) => ({ it, idx }))
+    .filter(({ it }) => it.periodId === item.periodId && it.categoryId === item.categoryId)
+    .map(({ idx }) => idx);
+  const posInGroup = groupIndices.findIndex(gi => allItems[gi].id === itemId);
+  const newPos = posInGroup + dir;
+  if (newPos < 0 || newPos >= groupIndices.length) return;
+  [allItems[groupIndices[posInGroup]], allItems[groupIndices[newPos]]] =
+    [allItems[groupIndices[newPos]], allItems[groupIndices[posInGroup]]];
+  DB.saveBonusItems(allItems);
   renderBonus();
 }
 
