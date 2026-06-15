@@ -73,7 +73,13 @@ const DB = {
 
   saveMonthlyData: (key, data) => {
     cache.monthlyData[key] = data;
-    fsSave('monthlyData', { data: cache.monthlyData });
+    // Field-level update avoids full-document-replace race conditions when multiple
+    // supplies are registered in quick succession (same doc, sequential .set() writes
+    // with offline persistence can arrive out of order).
+    const ref = fsDb.collection(FS_COL).doc('monthlyData');
+    ref.update({ [`data.${key}`]: data })
+      .catch(() => ref.set({ data: cache.monthlyData })
+        .catch(err => console.error('Firestore write error [monthlyData]:', err)));
   },
 };
 
