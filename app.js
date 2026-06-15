@@ -1561,14 +1561,14 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">名目<span class="form-label-optional">任意</span></label>
-      <input class="form-input" id="sup-label" type="text" value="${esc(initLabel)}" placeholder="例：楽天カード6月分" autocomplete="off">
-    </div>
-    <div class="form-group">
       <label class="form-label">内容</label>
       <select class="form-input" id="sup-m-item">
         ${mItemOpts(initMCatId)}
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">名目<span class="form-label-optional">任意</span></label>
+      <input class="form-input" id="sup-label" type="text" value="${esc(initLabel)}" placeholder="例：楽天カード6月分" autocomplete="off">
     </div>
     <div class="form-group">
       <label class="form-label">補充金額</label>
