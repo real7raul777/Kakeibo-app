@@ -200,6 +200,7 @@ const state = {
 };
 
 let _supEditSources = null; // null = 追加モード; array = 編集時のプリセット
+let _supSources     = [];   // 補充元選択一覧（モーダル内の作業用）
 
 // ====================== UTILS ======================
 
@@ -1538,11 +1539,24 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
   const initAmount  = sup ? sup.amount : '';
   const initLabel   = sup ? (sup.label || '') : '';
 
-  let initBPeriodId = bonusPeriods.length ? bonusPeriods[bonusPeriods.length - 1].id : '';
-  let initBCatId    = bonusCats.length ? bonusCats[0].id : '';
+  const initBPeriodId = bonusPeriods.length ? bonusPeriods[bonusPeriods.length - 1].id : '';
+  const initBCatId    = bonusCats.length ? bonusCats[0].id : '';
+
+  // 編集時は _supEditSources から _supSources を初期化
+  _supSources = [];
   if (_supEditSources && _supEditSources.length > 0) {
-    initBPeriodId = _supEditSources[0].periodId;
-    initBCatId    = _supEditSources[0].categoryId;
+    _supEditSources.forEach(src => {
+      const item = DB.getBonusItems().find(i => i.id === src.itemId);
+      const cat  = bonusCats.find(c => c.id === src.categoryId);
+      if (item) {
+        const effectiveRem = getBonusItemRemaining(item) + src.amount;
+        _supSources.push({
+          periodId: src.periodId, categoryId: src.categoryId, itemId: src.itemId,
+          amount: src.amount, rem: effectiveRem,
+          catName: cat ? cat.name : '', itemName: item.name,
+        });
+      }
+    });
   }
 
   function mItemOpts(catId) {
@@ -1581,25 +1595,29 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     ${hasBonusData ? `
       <div class="form-group">
         <label class="form-label">ボーナス期</label>
-        <select class="form-input" id="sup-b-period" onchange="supUpdateBItems()">
+        <select class="form-input" id="sup-b-period" onchange="supUpdateBItemSelect()">
           ${bonusPeriods.map(p => `<option value="${p.id}" ${p.id === initBPeriodId ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
         <label class="form-label">ボーナスカテゴリ</label>
-        <select class="form-input" id="sup-b-cat" onchange="supUpdateBItems()">
+        <select class="form-input" id="sup-b-cat" onchange="supUpdateBItemSelect()">
           ${bonusCats.map(c => `<option value="${c.id}" ${c.id === initBCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">ボーナス内容<span class="form-label-optional">複数選択可</span></label>
-        <div class="sup-items-box" id="sup-b-items-list"></div>
-      </div>
-      <div class="sup-total-row">
-        <span>補充合計</span>
-        <span id="sup-bonus-total" class="positive">¥0</span>
+        <label class="form-label">ボーナス内容を追加</label>
+        <div class="sup-add-row">
+          <select class="form-input" id="sup-b-item-sel"></select>
+          <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="supAddSource()">＋ 追加</button>
+        </div>
       </div>
     ` : '<div class="form-hint" style="margin-bottom:8px">ボーナス期・カテゴリを設定すると補充元を紐付けられます</div>'}
+    <div id="sup-sources-list"></div>
+    <div class="sup-total-row">
+      <span>補充合計</span>
+      <span id="sup-bonus-total" class="positive">¥0</span>
+    </div>
 
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
@@ -1612,16 +1630,10 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     const amount  = parseInt(document.getElementById('sup-amount').value) || 0;
     if (!amount) { alert('補充金額を入力してください'); return false; }
 
-    // Collect bonus sources
-    const bonusSources = [];
-    if (hasBonusData) {
-      const bPeriodId = document.getElementById('sup-b-period')?.value;
-      const bCatId    = document.getElementById('sup-b-cat')?.value;
-      document.querySelectorAll('#sup-b-items-list input[type=checkbox]:checked').forEach(cb => {
-        const amt = parseInt(document.getElementById('sup-amt-' + cb.value)?.value || '0') || 0;
-        if (amt > 0) bonusSources.push({ periodId: bPeriodId, categoryId: bCatId, itemId: cb.value, amount: amt });
-      });
-    }
+    // Collect bonus sources from _supSources
+    const bonusSources = _supSources
+      .filter(s => s.amount > 0)
+      .map(s => ({ periodId: s.periodId, categoryId: s.categoryId, itemId: s.itemId, amount: s.amount }));
 
     // Validate bonus remaining for each source
     for (const src of bonusSources) {
@@ -1678,7 +1690,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     if (state.activeTab === 'bonus') renderBonus();
   });
 
-  if (hasBonusData) setTimeout(() => supUpdateBItems(), 100);
+  setTimeout(() => { supUpdateBItemSelect(); supRenderSourceList(); supRecalcTotal(); }, 100);
 }
 
 // Global helpers for bonus supply form
@@ -1692,66 +1704,79 @@ function supUpdateMItems() {
     : '<option value="">（内容なし）</option>';
 }
 
-function supUpdateBItems() {
+function supUpdateBItemSelect() {
   const bPeriodId = document.getElementById('sup-b-period')?.value;
   const bCatId    = document.getElementById('sup-b-cat')?.value;
-  const container = document.getElementById('sup-b-items-list');
-  if (!container) return;
+  const sel       = document.getElementById('sup-b-item-sel');
+  if (!sel) return;
+  const items = DB.getBonusItems().filter(
+    i => i.periodId === bPeriodId && i.categoryId === bCatId && !_supSources.find(s => s.itemId === i.id)
+  );
+  sel.innerHTML = items.length
+    ? items.map(i => {
+        const rem = getBonusItemRemaining(i);
+        return `<option value="${i.id}" data-rem="${rem}">${esc(i.name)} (残: ${fmtSigned(rem)})</option>`;
+      }).join('')
+    : '<option value="">（追加できる内容なし）</option>';
+}
 
-  const items = DB.getBonusItems().filter(i => i.periodId === bPeriodId && i.categoryId === bCatId);
-  if (!items.length) {
-    container.innerHTML = '<div style="padding:6px;color:var(--text-muted);font-size:12px">内容がありません</div>';
-    supRecalcTotal();
-    return;
-  }
-
-  container.innerHTML = items.map(item => {
-    const rem    = getBonusItemRemaining(item);
-    const clsRem = rem <= 0 ? 'negative' : 'positive';
-    return `
-      <div class="sup-chk-row">
-        <label class="sup-chk-label">
-          <input type="checkbox" value="${item.id}" data-rem="${rem}" onchange="supToggleBItem(this)">
-          <span class="sup-chk-name">${esc(item.name)}</span>
-          <span class="sup-chk-rem ${clsRem}">${fmtSigned(rem)}</span>
-        </label>
-        <div class="sup-chk-amt" id="sup-chk-amt-${item.id}" style="display:none">
-          <input class="form-input" type="number" id="sup-amt-${item.id}" value="${Math.max(0, rem)}" inputmode="numeric" oninput="supRecalcTotal()">
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  // Apply pre-selection in edit mode
-  if (_supEditSources) {
-    _supEditSources.forEach(src => {
-      if (src.periodId === bPeriodId && src.categoryId === bCatId) {
-        const cb = container.querySelector(`input[type=checkbox][value="${src.itemId}"]`);
-        if (cb) {
-          cb.checked = true;
-          const amtDiv = document.getElementById('sup-chk-amt-' + src.itemId);
-          if (amtDiv) amtDiv.style.display = '';
-          const amtInput = document.getElementById('sup-amt-' + src.itemId);
-          if (amtInput) amtInput.value = src.amount;
-        }
-      }
-    });
-  }
-
+function supAddSource() {
+  const bPeriodId = document.getElementById('sup-b-period')?.value;
+  const bCatId    = document.getElementById('sup-b-cat')?.value;
+  const sel       = document.getElementById('sup-b-item-sel');
+  if (!sel || !sel.value) { alert('追加するボーナス内容を選択してください'); return; }
+  const itemId = sel.value;
+  if (_supSources.find(s => s.itemId === itemId)) return;
+  const item = DB.getBonusItems().find(i => i.id === itemId);
+  const cat  = DB.getBonusCats().find(c => c.id === bCatId);
+  if (!item) return;
+  const rem = getBonusItemRemaining(item);
+  _supSources.push({
+    periodId: bPeriodId, categoryId: bCatId, itemId,
+    amount: Math.max(0, rem), rem,
+    catName: cat ? cat.name : '', itemName: item.name,
+  });
+  supRenderSourceList();
+  supUpdateBItemSelect();
   supRecalcTotal();
 }
 
-function supToggleBItem(cb) {
-  const amtDiv = document.getElementById('sup-chk-amt-' + cb.value);
-  if (amtDiv) amtDiv.style.display = cb.checked ? '' : 'none';
+function supRemoveSource(itemId) {
+  _supSources = _supSources.filter(s => s.itemId !== itemId);
+  supRenderSourceList();
+  supUpdateBItemSelect();
+  supRecalcTotal();
+}
+
+function supRenderSourceList() {
+  const container = document.getElementById('sup-sources-list');
+  if (!container) return;
+  if (!_supSources.length) { container.innerHTML = ''; return; }
+  container.innerHTML = _supSources.map(src => `
+    <div class="sup-source-item">
+      <div class="sup-source-info">
+        <div class="sup-source-name">${esc(src.catName)}／${esc(src.itemName)}</div>
+        <div class="sup-source-rem">残: ${fmtSigned(src.rem)}</div>
+      </div>
+      <input class="form-input sup-source-amt" type="number" value="${src.amount}"
+        max="${src.rem}" inputmode="numeric"
+        oninput="supUpdateSourceAmt('${src.itemId}', this)">
+      <button class="btn btn-danger btn-xs" onclick="supRemoveSource('${src.itemId}')">削除</button>
+    </div>
+  `).join('');
+}
+
+function supUpdateSourceAmt(itemId, input) {
+  const src = _supSources.find(s => s.itemId === itemId);
+  if (!src) return;
+  let val = parseInt(input.value) || 0;
+  if (val > src.rem) { val = src.rem; input.value = val; }
+  src.amount = val;
   supRecalcTotal();
 }
 
 function supRecalcTotal() {
-  let total = 0;
-  document.querySelectorAll('#sup-b-items-list input[type=checkbox]:checked').forEach(cb => {
-    total += parseInt(document.getElementById('sup-amt-' + cb.value)?.value || '0') || 0;
-  });
+  const total = _supSources.reduce((s, src) => s + (src.amount || 0), 0);
   const totalEl = document.getElementById('sup-bonus-total');
   if (totalEl) totalEl.textContent = fmt(total);
   if (total > 0) {

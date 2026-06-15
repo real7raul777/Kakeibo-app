@@ -605,6 +605,26 @@ body {
   margin-top: 5px;
   padding-left: 24px;
 }
+.sup-add-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.sup-add-row .form-input { flex: 1; min-width: 0; }
+.sup-source-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.sup-source-info { flex: 1; min-width: 0; }
+.sup-source-name { font-size: 12px; font-weight: 600; }
+.sup-source-rem  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.sup-source-amt  { width: 90px; flex-shrink: 0; padding: 7px 8px; font-size: 13px; }
 .sup-total-row {
   display: flex;
   justify-content: space-between;
