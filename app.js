@@ -1207,7 +1207,7 @@ function renderMonthly() {
   const cats = DB.getMonthlyCats();
 
   const totalPay    = calcTotalPayments(data, cats);
-  const totalSupply = data.bonusSupplies.reduce((s, b) => s + b.amount, 0);
+  const totalSupply = data.bonusSupplies.filter(b => b.confirmed !== false).reduce((s, b) => s + b.amount, 0);
   const balance     = data.income + totalSupply - totalPay;
 
   document.getElementById('monthly-content').innerHTML = `
@@ -1332,36 +1332,49 @@ function renderBonusSupplies(periodKey, data, cats) {
   return `
     <ul class="exp-list">
       ${data.bonusSupplies.map(sup => {
-        const mCat  = cats.find(c => c.id === sup.monthlyCategoryId);
-        const mItem = mCat?.items.find(i => i.id === sup.monthlyItemId);
+        const mCat     = cats.find(c => c.id === sup.monthlyCategoryId);
+        const mItem    = mCat?.items.find(i => i.id === sup.monthlyItemId);
+        const confirmed = sup.confirmed !== false;
 
-        let sourceHtml;
-        if (sup.bonusSources && sup.bonusSources.length > 0) {
-          sourceHtml = sup.bonusSources.map(src => {
-            const bPer  = bonusPeriods.find(p => p.id === src.periodId);
-            const bCat  = bonusCats.find(c => c.id === src.categoryId);
-            const bItem = bonusItems.find(i => i.id === src.itemId);
-            return `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''} (${fmt(src.amount)})</div>`;
-          }).join('');
-        } else if (sup.bonusPeriodId) {
-          const bPer  = bonusPeriods.find(p => p.id === sup.bonusPeriodId);
-          const bCat  = bonusCats.find(c => c.id === sup.bonusCategoryId);
-          const bItem = bonusItems.find(i => i.id === sup.bonusItemId);
-          sourceHtml = `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''}</div>
-            <div class="exp-memo">ボーナスから ${fmt(sup.bonusAmount)}</div>`;
-        } else {
-          sourceHtml = '<div class="supply-arrow" style="color:var(--text-muted)">未紐付け</div>';
+        let sourceHtml = '';
+        if (confirmed) {
+          if (sup.bonusSources && sup.bonusSources.length > 0) {
+            sourceHtml = sup.bonusSources.map(src => {
+              const bPer  = bonusPeriods.find(p => p.id === src.periodId);
+              const bCat  = bonusCats.find(c => c.id === src.categoryId);
+              const bItem = bonusItems.find(i => i.id === src.itemId);
+              return `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''} (${fmt(src.amount)})</div>`;
+            }).join('');
+          } else if (sup.bonusPeriodId) {
+            const bPer  = bonusPeriods.find(p => p.id === sup.bonusPeriodId);
+            const bCat  = bonusCats.find(c => c.id === sup.bonusCategoryId);
+            const bItem = bonusItems.find(i => i.id === sup.bonusItemId);
+            sourceHtml = `<div class="supply-arrow">↖ ${bPer ? bonusPeriodLabel(bPer) : ''}　${bCat ? esc(bCat.name) : ''}／${bItem ? esc(bItem.name) : ''}</div>
+              <div class="exp-memo">ボーナスから ${fmt(sup.bonusAmount)}</div>`;
+          } else {
+            sourceHtml = '<div class="supply-arrow" style="color:var(--text-muted)">未紐付け</div>';
+          }
         }
 
         return `
-          <li class="exp-item">
+          <li class="exp-item${confirmed ? '' : ' supply-unconfirmed'}">
             <div class="exp-info">
               <div class="exp-date fw-bold">${mCat ? esc(mCat.name) : ''}／${mItem ? esc(mItem.name) : (sup.monthlyCustomName || '—')}</div>
-              ${sup.label ? `<div class="exp-memo">${esc(sup.label)}</div>` : ''}
+              <div class="supply-status-row">
+                ${confirmed
+                  ? '<span class="tag tag-confirmed">✓ 確定済み</span>'
+                  : '<span class="tag tag-unconfirmed">未確定</span>'
+                }
+                <button class="btn ${confirmed ? 'btn-warning' : 'btn-success'} btn-xs"
+                  onclick="toggleBonusSupplyConfirmed('${periodKey}','${sup.id}')">
+                  ${confirmed ? '取消' : '確定'}
+                </button>
+                ${sup.label ? `<span class="exp-memo">${esc(sup.label)}</span>` : ''}
+              </div>
               ${sourceHtml}
             </div>
             <div class="exp-right">
-              <span class="exp-amount">${fmt(sup.amount)}</span>
+              <span class="exp-amount${confirmed ? '' : ' text-muted'}">${fmt(sup.amount)}</span>
               <button class="btn btn-secondary btn-xs" onclick="showEditBonusSupply('${periodKey}','${sup.id}')">編集</button>
               <button class="btn btn-danger btn-xs" onclick="deleteBonusSupply('${periodKey}','${sup.id}')">削除</button>
             </div>
@@ -1370,6 +1383,24 @@ function renderBonusSupplies(periodKey, data, cats) {
       }).join('')}
     </ul>
   `;
+}
+
+function toggleBonusSupplyConfirmed(periodKey, supId) {
+  const data = DB.getMonthlyData(periodKey);
+  const sup  = data.bonusSupplies.find(s => s.id === supId);
+  if (!sup) return;
+  const isCurrentlyConfirmed = sup.confirmed !== false;
+  if (isCurrentlyConfirmed) {
+    if (!confirm('確定を取り消しますか？\nボーナスとの紐づけ情報がクリアされます。')) return;
+    sup.confirmed    = false;
+    sup.bonusSources = [];
+    DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== supId));
+  } else {
+    sup.confirmed = true;
+  }
+  DB.saveMonthlyData(periodKey, data);
+  renderMonthly();
+  if (state.activeTab === 'bonus') renderBonus();
 }
 
 // --- Monthly Navigation ---
@@ -1538,6 +1569,7 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
   if (!mCats.length) { alert('月次カテゴリを先に設定してください'); return; }
 
   const hasBonusData = bonusPeriods.length > 0 && bonusCats.length > 0;
+  const isConfirmed  = mode === 'edit' && !!sup && sup.confirmed !== false;
 
   const initMCatId  = sup ? sup.monthlyCategoryId : mCats[0].id;
   const initMCat    = mCats.find(c => c.id === initMCatId) || mCats[0];
@@ -1598,32 +1630,39 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     <hr class="form-divider">
     <div class="form-section-label">補充元（ボーナス）<span class="form-label-optional">任意</span></div>
 
-    ${hasBonusData ? `
-      <div class="form-group">
-        <label class="form-label">ボーナス期</label>
-        <select class="form-input" id="sup-b-period" onchange="supUpdateBItemSelect()">
-          ${bonusPeriods.map(p => `<option value="${p.id}" ${p.id === initBPeriodId ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
-        </select>
+    ${!isConfirmed ? `
+      <div class="supply-link-locked">
+        <span style="font-size:18px">🔒</span>
+        <span>確定済みにするとボーナスとの紐づけができます</span>
       </div>
-      <div class="form-group">
-        <label class="form-label">ボーナスカテゴリ</label>
-        <select class="form-input" id="sup-b-cat" onchange="supUpdateBItemSelect()">
-          ${bonusCats.map(c => `<option value="${c.id}" ${c.id === initBCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">ボーナス内容を追加</label>
-        <div class="sup-add-row">
-          <select class="form-input" id="sup-b-item-sel"></select>
-          <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="supAddSource()">＋ 追加</button>
+    ` : `
+      ${hasBonusData ? `
+        <div class="form-group">
+          <label class="form-label">ボーナス期</label>
+          <select class="form-input" id="sup-b-period" onchange="supUpdateBItemSelect()">
+            ${bonusPeriods.map(p => `<option value="${p.id}" ${p.id === initBPeriodId ? 'selected' : ''}>${bonusPeriodLabel(p)}</option>`).join('')}
+          </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">ボーナスカテゴリ</label>
+          <select class="form-input" id="sup-b-cat" onchange="supUpdateBItemSelect()">
+            ${bonusCats.map(c => `<option value="${c.id}" ${c.id === initBCatId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">ボーナス内容を追加</label>
+          <div class="sup-add-row">
+            <select class="form-input" id="sup-b-item-sel"></select>
+            <button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="supAddSource()">＋ 追加</button>
+          </div>
+        </div>
+      ` : '<div class="form-hint" style="margin-bottom:8px">ボーナス期・カテゴリを設定すると補充元を紐付けられます</div>'}
+      <div id="sup-sources-list"></div>
+      <div class="sup-total-row">
+        <span>補充合計</span>
+        <span id="sup-bonus-total" class="positive">¥0</span>
       </div>
-    ` : '<div class="form-hint" style="margin-bottom:8px">ボーナス期・カテゴリを設定すると補充元を紐付けられます</div>'}
-    <div id="sup-sources-list"></div>
-    <div class="sup-total-row">
-      <span>補充合計</span>
-      <span id="sup-bonus-total" class="positive">¥0</span>
-    </div>
+    `}
 
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
@@ -1636,10 +1675,10 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
     const amount  = parseInt(document.getElementById('sup-amount').value) || 0;
     if (!amount) { alert('補充金額を入力してください'); return false; }
 
-    // Collect bonus sources from _supSources
-    const bonusSources = _supSources
-      .filter(s => s.amount > 0)
-      .map(s => ({ periodId: s.periodId, categoryId: s.categoryId, itemId: s.itemId, amount: s.amount }));
+    // Collect bonus sources only for confirmed supplies in edit mode
+    const bonusSources = isConfirmed
+      ? _supSources.filter(s => s.amount > 0).map(s => ({ periodId: s.periodId, categoryId: s.categoryId, itemId: s.itemId, amount: s.amount }))
+      : [];
 
     // Validate bonus remaining for each source
     for (const src of bonusSources) {
@@ -1666,29 +1705,23 @@ function _openBonusSupplyModal(mode, periodKey, sup) {
 
     if (mode === 'add') {
       const supId = genId('sup');
-      data.bonusSupplies.push({ id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources });
+      data.bonusSupplies.push({ id: supId, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources: [], confirmed: false });
       DB.saveMonthlyData(periodKey, data);
-      if (bonusSources.length) {
-        const bExps = DB.getBonusExpenses();
-        bonusSources.forEach(src => {
-          bExps.push({ id: genId('bsup'), periodId: src.periodId, date: new Date().toISOString().split('T')[0],
-            categoryId: src.categoryId, itemId: src.itemId, amount: src.amount, memo, source: 'bonus_supply', supplyId: supId });
-        });
-        DB.saveBonusExpenses(bExps);
-      }
     } else {
       const supIdx = data.bonusSupplies.findIndex(s => s.id === sup.id);
       if (supIdx < 0) return false;
-      data.bonusSupplies[supIdx] = { id: sup.id, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources };
+      data.bonusSupplies[supIdx] = { id: sup.id, monthlyCategoryId: mCatId, monthlyItemId: mItemId, label, amount, bonusSources, confirmed: sup.confirmed };
       DB.saveMonthlyData(periodKey, data);
-      DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== sup.id));
-      if (bonusSources.length) {
-        const bExps = DB.getBonusExpenses();
-        bonusSources.forEach(src => {
-          bExps.push({ id: genId('bsup'), periodId: src.periodId, date: new Date().toISOString().split('T')[0],
-            categoryId: src.categoryId, itemId: src.itemId, amount: src.amount, memo, source: 'bonus_supply', supplyId: sup.id });
-        });
-        DB.saveBonusExpenses(bExps);
+      if (isConfirmed) {
+        DB.saveBonusExpenses(DB.getBonusExpenses().filter(e => e.supplyId !== sup.id));
+        if (bonusSources.length) {
+          const bExps = DB.getBonusExpenses();
+          bonusSources.forEach(src => {
+            bExps.push({ id: genId('bsup'), periodId: src.periodId, date: new Date().toISOString().split('T')[0],
+              categoryId: src.categoryId, itemId: src.itemId, amount: src.amount, memo, source: 'bonus_supply', supplyId: sup.id });
+          });
+          DB.saveBonusExpenses(bExps);
+        }
       }
     }
 
