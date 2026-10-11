@@ -38,7 +38,7 @@ function fsSave(docId, data) {
 
 async function loadAll() {
   const ids = ['bonusCats', 'bonusPeriods', 'bonusItems', 'bonusExpenses', 'monthlyCats', 'monthlyData'];
-  const snaps = await Promise.all(ids.map(id => fsDb.collection(FS_COL).doc(id).get()));
+  const snaps = await Promise.all(ids.map(id => fsDb.collection(FS_COL).doc(id).get({ source: 'server' })));
   cache.bonusCats    = snaps[0].data()?.items || [];
   cache.bonusPeriods = snaps[1].data()?.items || [];
   cache.bonusItems   = snaps[2].data()?.items || [];
@@ -83,118 +83,82 @@ const DB = {
   },
 };
 
-// ====================== AUTH ======================
+// ====================== AUTH (Firebase Google Sign-In) ======================
+// Access to Firestore is enforced by Firestore Security Rules, NOT this UI.
+const fbAuth = firebase.auth();
 
-const SESSION_KEY = 'kakeibo_session';
-
-function isLoggedIn() {
-  return sessionStorage.getItem(SESSION_KEY) === '1';
+async function startGoogleLogin() {
+  const btn = document.getElementById('google-login-btn');
+  const errorEl = document.getElementById('login-error');
+  errorEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.textContent = 'Googleに接続中...';
+  try {
+    await fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+    // onAuthStateChanged will start the app after a successful sign-in.
+  } catch (err) {
+    console.error('Firebase Authentication error:', err);
+    const hint = err.code === 'auth/unauthorized-domain'
+      ? 'Firebase Authenticationの承認済みドメインに、このGitHub Pagesのドメインを追加してください。'
+      : (err.code === 'auth/popup-blocked'
+        ? 'ポップアップがブロックされました。ブラウザの設定をご確認ください。'
+        : 'Googleログインに失敗しました。もう一度お試しください。');
+    errorEl.textContent = hint;
+    errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Googleでログイン';
+  }
 }
 
-function setLoggedIn() {
-  sessionStorage.setItem(SESSION_KEY, '1');
-}
-
-function confirmLogout() {
+async function confirmLogout() {
   if (!confirm('ログアウトしますか？')) return;
-  sessionStorage.removeItem(SESSION_KEY);
+  await fbAuth.signOut();
+  // Clear in-memory personal data and listeners on logout.
   location.reload();
 }
 
-// config/password ドキュメントを取得（未存在なら初期値で作成）
-async function getPasswordDoc() {
-  const ref  = fsDb.collection('config').doc('password');
-  const snap = await ref.get();
-  if (!snap.exists) {
-    await ref.set({ id: 'admin', password: 'kakeibo2026' });
-    return { id: 'admin', password: 'kakeibo2026' };
-  }
-  return snap.data();
-}
-
-async function attemptLogin() {
-  const btn     = document.getElementById('login-btn');
-  const errorEl = document.getElementById('login-error');
-  const inputId = document.getElementById('login-id').value.trim();
-  const inputPw = document.getElementById('login-pw').value;
-
-  errorEl.classList.add('hidden');
-
-  if (!inputId || !inputPw) {
-    errorEl.textContent = 'IDとパスワードを入力してください';
-    errorEl.classList.remove('hidden');
+// Export the existing flat Firestore collection as a local JSON file.
+// Fetch from the server so an offline/stale cache is never called a backup.
+async function downloadBackup() {
+  if (!fbAuth.currentUser) {
+    alert('Googleログイン後にバックアップしてください。');
     return;
   }
-
-  btn.disabled    = true;
-  btn.textContent = '確認中...';
-
+  const btn = document.getElementById('backup-download-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '取得中...'; }
   try {
-    const data = await getPasswordDoc();
-    if (data.id === inputId && data.password === inputPw) {
-      setLoggedIn();
-      document.getElementById('login-overlay').classList.add('hidden');
-      await startApp();
-    } else {
-      errorEl.textContent = 'IDまたはパスワードが正しくありません';
-      errorEl.classList.remove('hidden');
-      btn.disabled    = false;
-      btn.textContent = 'ログイン';
-      document.getElementById('login-pw').value = '';
-      document.getElementById('login-pw').focus();
-    }
+    const ids = ['bonusCats', 'bonusPeriods', 'bonusItems', 'bonusExpenses', 'monthlyCats', 'monthlyData'];
+    const snapshots = await Promise.all(
+      ids.map(id => fsDb.collection('kakeibo').doc(id).get({ source: 'server' }))
+    );
+    const documents = {};
+    snapshots.forEach((snap, i) => {
+      documents[ids[i]] = snap.exists ? snap.data() : null;
+    });
+    const backup = {
+      format: 'kakeibo-firestore-backup-v1',
+      exportedAt: new Date().toISOString(),
+      projectId: firebaseConfig.projectId,
+      collection: 'kakeibo',
+      documents
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'kakeibo-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    alert('バックアップのダウンロードを開始しました。ファイルが保存されたことを確認してください。');
   } catch (err) {
-    errorEl.textContent = 'エラーが発生しました: ' + err.message;
-    errorEl.classList.remove('hidden');
-    btn.disabled    = false;
-    btn.textContent = 'ログイン';
+    console.error('Backup failed:', err);
+    alert('バックアップに失敗しました。通信状態とFirestoreルールをご確認ください。');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📦 家計簿データをバックアップ（JSON）'; }
   }
-}
-
-async function doChangePassword() {
-  const newId  = document.getElementById('f-new-id').value.trim();
-  const newPw  = document.getElementById('f-new-pw').value;
-  const confirm = document.getElementById('f-confirm-pw').value;
-
-  if (!newId)          { alert('IDを入力してください');        return; }
-  if (!newPw)          { alert('パスワードを入力してください'); return; }
-  if (newPw !== confirm) { alert('パスワードが一致しません');  return; }
-
-  const btn = document.getElementById('pw-change-btn');
-  btn.disabled    = true;
-  btn.textContent = '変更中...';
-
-  try {
-    await fsDb.collection('config').doc('password').set({ id: newId, password: newPw });
-    closeModal();
-    alert('変更しました。次回ログインから新しいIDとパスワードが有効になります。');
-  } catch (err) {
-    alert('エラー: ' + err.message);
-    btn.disabled    = false;
-    btn.textContent = '変更する';
-  }
-}
-
-function showChangePassword() {
-  openModal('パスワード変更', `
-    <div class="form-group">
-      <label class="form-label">新しいID</label>
-      <input class="form-input" id="f-new-id" type="text" autocomplete="off" placeholder="新しいID">
-    </div>
-    <div class="form-group">
-      <label class="form-label">新しいパスワード</label>
-      <input class="form-input" id="f-new-pw" type="password" autocomplete="new-password" placeholder="新しいパスワード">
-    </div>
-    <div class="form-group">
-      <label class="form-label">パスワード（確認）</label>
-      <input class="form-input" id="f-confirm-pw" type="password" autocomplete="new-password" placeholder="もう一度入力">
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
-      <button class="btn btn-primary" id="pw-change-btn" onclick="doChangePassword()">変更する</button>
-    </div>
-  `);
-  setTimeout(() => document.getElementById('f-new-id')?.focus(), 100);
 }
 
 // ====================== STATE ======================
@@ -341,7 +305,7 @@ function renderSettings() {
         <span class="section-title">アカウント</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px">
-        <button class="btn btn-secondary" onclick="showChangePassword()">🔑 パスワード変更</button>
+        <button class="btn btn-secondary" id="backup-download-btn" onclick="downloadBackup()">📦 家計簿データをバックアップ（JSON）</button>
         <button class="btn btn-danger" onclick="confirmLogout()">ログアウト</button>
       </div>
     </div>
@@ -1851,7 +1815,7 @@ async function startApp() {
       <div style="text-align:center;padding:32px;max-width:320px">
         <div style="font-size:40px;margin-bottom:12px">⚠️</div>
         <div style="font-size:15px;font-weight:700;margin-bottom:8px">読み込みに失敗しました</div>
-        <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">${err.message}</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">データを取得できませんでした。ログイン中のGoogleアカウントとFirestoreルール、通信状態を確認してください。</div>
         <button class="btn btn-primary btn-block" onclick="location.reload()">再読み込み</button>
       </div>`;
     return;
@@ -1877,22 +1841,23 @@ async function startApp() {
 }
 
 function init() {
-  if (isLoggedIn()) {
-    // セッション継続中 → そのままアプリ起動
-    startApp();
-  } else {
-    // 未ログイン → ログイン画面を表示
+  // The initial loading overlay remains visible until Firebase resolves auth.
+  fbAuth.onAuthStateChanged(async user => {
+    if (user) {
+      document.getElementById('login-overlay').classList.add('hidden');
+      await startApp();
+    } else {
+      // Do not load household data unless the Firebase user is signed in.
+      document.getElementById('loading-overlay').classList.add('hidden');
+      document.getElementById('login-overlay').classList.remove('hidden');
+    }
+  }, err => {
+    console.error('Auth state error:', err);
     document.getElementById('loading-overlay').classList.add('hidden');
+    document.getElementById('login-error').textContent = '認証状態の確認に失敗しました。再読み込みしてください。';
+    document.getElementById('login-error').classList.remove('hidden');
     document.getElementById('login-overlay').classList.remove('hidden');
-    setTimeout(() => document.getElementById('login-id')?.focus(), 100);
-
-    // Enter キーでログイン
-    ['login-id', 'login-pw'].forEach(id => {
-      document.getElementById(id)?.addEventListener('keydown', e => {
-        if (e.key === 'Enter') attemptLogin();
-      });
-    });
-  }
+  });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', init);document.addEventListener('DOMContentLoaded', init);
